@@ -20,6 +20,7 @@ from assemble_video import assemble_video
 from generate_thumbnail import generate_thumbnail
 from upload_youtube import upload_video
 from languages import voice_for_language
+from select_music import pick_track
 
 WORK_DIR = "work"
 OUTPUT_DIR = "output"
@@ -77,6 +78,9 @@ def run():
     voiceover_path = os.path.join(WORK_DIR, "voiceover.wav")
     generate_voiceover(package["narration"], voiceover_path, voice=voice_for_language(language))
 
+    music_path = pick_track()
+    if music_path:
+        print(f"  -> Background music: {os.path.basename(music_path)}")
     # VisualProvider: "pexels" | "illustration"
     visual_style = os.environ.get("VISUAL_STYLE", "pexels")
     orientation = "portrait" if is_shorts else "landscape"
@@ -113,8 +117,8 @@ def run():
     assemble_video(
         clip_paths, voiceover_path, package["title"], video_path,
         work_dir=WORK_DIR, vertical=is_shorts, narration=package["narration"],
+        music_path=music_path,
     )
-
     thumbnail_path = os.path.join(OUTPUT_DIR, "thumbnail.jpg")
     generate_thumbnail(video_path, package["title"], thumbnail_path, vertical=is_shorts)
 
