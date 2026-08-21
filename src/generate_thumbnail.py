@@ -3,8 +3,12 @@ Generates a simple 1280x720 thumbnail: a frame from the video with
 bold title text overlaid. Requires ffmpeg for frame extraction.
 """
 
-import subprocess
+import os
 from PIL import Image, ImageDraw, ImageFont
+
+FONT_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "fonts", "Montserrat-Bold.ttf"
+)
 
 
 def _extract_frame(video_path: str, out_path: str, timestamp: float = 1.5):
@@ -32,7 +36,7 @@ def generate_thumbnail(video_path: str, title_text: str, out_path: str, vertical
 
     font_size = max(36, width // 20)
     try:
-        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
+        font = ImageFont.truetype(FONT_PATH, font_size)   # was the DejaVuSans-Bold system path
     except OSError:
         font = ImageFont.load_default()
 
