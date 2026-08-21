@@ -13,7 +13,7 @@ DEFAULT_LANGUAGE = "english"
 # Piper has no Urdu voice at all as of this writing -- Arabic, Farsi, or
 # Hindi are the closest available options.
 LANGUAGE_VOICES = {
-    "english": "en_US-lessac-medium",
+    "english": "en_US-ryan-high",
     "spanish": "es_ES-davefx-medium",
     "french": "fr_FR-siwis-medium",
     "german": "de_DE-thorsten-medium",
