@@ -4,6 +4,7 @@ bold title text overlaid. Requires ffmpeg for frame extraction.
 """
 
 import os
+import subprocess
 from PIL import Image, ImageDraw, ImageFont
 
 FONT_PATH = os.path.join(
