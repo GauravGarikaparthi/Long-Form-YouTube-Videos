@@ -48,8 +48,8 @@ def fetch_clips(
                 continue
 
         # Pick a mid-quality HD file to keep download size reasonable
-        video_files = sorted(videos[0]["video_files"], key=lambda v: v.get("width", 0))
-        candidates = [v for v in video_files if 1000 <= v.get("width", 0) <= 1920]
+        video_files = sorted(videos[0]["video_files"], key=lambda v: _target_dimension(v, orientation))
+        candidates = [v for v in video_files if 1000 <= _target_dimension(v, orientation) <= 1920]
         chosen = candidates[0] if candidates else video_files[-1]
 
         out_path = os.path.join(out_dir, f"clip_{i:02d}.mp4")
