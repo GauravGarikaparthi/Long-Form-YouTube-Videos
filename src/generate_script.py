@@ -10,7 +10,7 @@ from groq import Groq
 from _sanitize import sanitize_credential
 from languages import DEFAULT_LANGUAGE, name_for_language
 
-MODEL = "llama-3.3-70b-versatile"
+MODEL = "openai/gpt-oss-120b"
 
 
 def _language_instruction(language: str) -> str:
