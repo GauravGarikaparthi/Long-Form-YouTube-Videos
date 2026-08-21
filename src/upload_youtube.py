@@ -64,7 +64,15 @@ def upload_video(
     print(f"[upload_youtube] Uploaded: https://www.youtube.com/watch?v={video_id}")
 
     if thumbnail_path:
-        youtube.thumbnails().set(videoId=video_id, media_body=MediaFileUpload(thumbnail_path)).execute()
+        try:
+            youtube.thumbnails().set(videoId=video_id, media_body=MediaFileUpload(thumbnail_path)).execute()
+        except Exception as e:
+            # The video itself is already live -- a thumbnail failure (e.g. the
+            # channel isn't phone-verified yet, see youtube.com/verify) should
+            # not be treated as a fatal pipeline error and shouldn't hide a
+            # successful upload behind a red "failed" run.
+            print(f"[upload_youtube] WARNING: could not set custom thumbnail ({e}). "
+                  f"Video uploaded fine with the auto-generated thumbnail instead.")
 
     return video_id
 
