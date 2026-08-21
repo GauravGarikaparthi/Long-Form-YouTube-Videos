@@ -15,7 +15,7 @@ from piper import PiperVoice
 
 from _sanitize import sanitize_text
 
-DEFAULT_VOICE = "en_US-lessac-medium"
+DEFAULT_VOICE = "en_US-ryan-high"
 
 # Repo root's voices/ dir (sibling of src/), cached across CI runs via
 # actions/cache in the workflow so the ~60MB model isn't re-downloaded daily.
