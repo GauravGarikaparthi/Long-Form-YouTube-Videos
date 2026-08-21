@@ -10,9 +10,18 @@ import subprocess
 import json
 
 MAX_CAPTION_WORDS = 6
-XFADE_DURATION = 0.6  # seconds -- crossfade dissolve length between scenes
+XFADE_DURATION = 0.35  # seconds -- crossfade dissolve length between scenes
 TARGET_FPS = 25  # every clip must share this exactly, or xfade can fail/crash
+TRANSITIONS = ["fade", "slideleft", "hblur", "slideright", "wiperight", "wipeleft"]
 
+# Clean, bold sans-serif for all on-screen text (captions + title card).
+# Downloaded once per CI run into <repo_root>/fonts/ -- see daily_video.yml.
+FONT_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "fonts", "Montserrat-Bold.ttf"
+)
+CAPTION_FONT_SIZE = 66
+CAPTION_OUTLINE_WIDTH = 7
+TITLE_FONT_SIZE = 58
 
 def _run_ffmpeg(args: list[str]) -> None:
     """
@@ -51,12 +60,14 @@ def _write_caption_file(text: str, path: str) -> str:
     return path
 
 
-def _chunk_narration_for_captions(narration: str, max_words: int = MAX_CAPTION_WORDS) -> list[str]:
+def _chunk_narration_for_captions(narration: str, max_words: int = MAX_CAPTION_WORDS) -> list[dict]:
     """
-    Splits narration into short, punchy caption chunks (a handful of words
-    each) instead of one long block of text -- mirrors the dramatic
-    on-screen caption style common in this genre (e.g. "THEY CALL IT",
-    "HIS NAME ECHOES ACROSS THE DESERT").
+    Splits narration into short, punchy caption chunks (a handful of words each).
+    Returns dicts with word_count alongside text so the caller can time each
+    chunk's on-screen duration proportional to how many words it has -- a short
+    2-word chunk should flash by much faster than a 6-word one, not sit on
+    screen for the same fixed slice, or captions visibly drift out of sync
+    with the voiceover well before the video ends.
     """
     sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", narration.strip()) if s.strip()]
 
@@ -64,12 +75,28 @@ def _chunk_narration_for_captions(narration: str, max_words: int = MAX_CAPTION_W
     for sentence in sentences:
         words = sentence.split()
         for i in range(0, len(words), max_words):
-            chunk = " ".join(words[i : i + max_words]).strip(".,!?")
+            word_slice = words[i : i + max_words]
+            chunk = " ".join(word_slice).strip(".,!?")
             if chunk:
-                chunks.append(chunk.upper())
+                chunks.append({"text": chunk.upper(), "word_count": len(word_slice)})
 
     return chunks
 
+def _motion_filter(width: int, height: int, frames: int, fps: int, slot_index: int) -> str:
+    """
+    Subtle zoom/pan movement for each segment -- gives static-feeling stock
+    footage dynamic, parallax/Ken-Burns-style camera motion instead of a flat,
+    unmoving shot. Cycles through a few presets so consecutive clips don't all
+    move identically (same technique generate_illustrations.py uses).
+    """
+    presets = [
+        ("min(zoom+0.0012,1.15)", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"),
+        ("if(eq(on,0),1.15,max(zoom-0.0012,1.0))", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"),
+        ("1.12", f"iw/2-(iw/zoom/2)+min((iw-iw/zoom)/2,(on/{frames})*(iw*0.12))", "ih/2-(ih/zoom/2)"),
+        ("1.12", f"iw/2-(iw/zoom/2)-min((iw-iw/zoom)/2,(on/{frames})*(iw*0.12))", "ih/2-(ih/zoom/2)"),
+    ]
+    zoom_expr, x_expr, y_expr = presets[slot_index % len(presets)]
+    return f"zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}':d={frames}:s={width}x{height}:fps={fps}"
 
 def assemble_video(
     clip_paths: list[str],
@@ -138,9 +165,14 @@ def assemble_video(
     for slot in range(n_slots):
         clip = normalized[slot % len(normalized)]
         seg_path = os.path.join(work_dir, f"seg_{slot:02d}.mp4")
+        frames = max(int(per_clip_seconds * TARGET_FPS), 1)
+        # Upscale 2x before zoompan so the crop/zoom has real detail to move
+        # into -- zooming at native resolution just softens the image.
+        motion = _motion_filter(width, height, frames, TARGET_FPS, slot)
         _run_ffmpeg(
             [
                 "ffmpeg", "-y", "-stream_loop", "-1", "-t", str(per_clip_seconds), "-i", clip,
+                "-vf", f"scale={width * 2}:{height * 2},{motion}",
                 "-r", str(TARGET_FPS),
                 "-c:v", "libx264", "-preset", "veryfast",
                 seg_path,
@@ -167,8 +199,9 @@ def assemble_video(
         for slot in range(1, n_slots):
             offset = cumulative - XFADE_DURATION
             out_label = f"xf{slot}"
+            transition = TRANSITIONS[(slot - 1) % len(TRANSITIONS)]
             filters.append(
-                f"[{prev_label}][{slot}:v]xfade=transition=fade:"
+                f"[{prev_label}][{slot}:v]xfade=transition={transition}:"
                 f"duration={XFADE_DURATION}:offset={offset:.3f}[{out_label}]"
             )
             prev_label = out_label
@@ -187,30 +220,38 @@ def assemble_video(
 
     title_file = _write_caption_file(title_text, os.path.join(work_dir, "title.txt"))
     title_filter = (
-        f"drawtext=textfile='{title_file}':fontcolor=white:fontsize=54:"
-        "box=1:boxcolor=black@0.5:boxborderw=20:"
+        f"drawtext=fontfile='{FONT_PATH}':textfile='{title_file}':"
+        f"fontcolor=white:fontsize={TITLE_FONT_SIZE}:"
+        "borderw=6:bordercolor=black@0.95:"
         "x=(w-text_w)/2:y=h*0.08:"
         "enable='between(t,0,3.5)'"
     )
     filters = [title_filter]
 
-    # Dramatic short captions, timed evenly across the video after the
-    # title fades -- e.g. "THEY CALL IT", "HIS NAME ECHOES ACROSS THE DESERT".
     if narration:
         caption_start = 3.5
         chunks = _chunk_narration_for_captions(narration)
         remaining = max(voice_duration - caption_start, 0)
+        total_words = sum(c["word_count"] for c in chunks) or 1
         if chunks and remaining > 0:
-            per_caption = remaining / len(chunks)
+            # Time each chunk proportional to its word count (roughly constant
+            # speaking rate) instead of splitting time evenly across chunks --
+            # this is a lightweight estimate, not frame-perfect forced
+            # alignment (Piper doesn't expose word-level timestamps), but it
+            # tracks real speech pacing far more closely than a flat split.
+            seconds_per_word = remaining / total_words
+            cursor = caption_start
             for i, chunk in enumerate(chunks):
-                start = caption_start + i * per_caption
-                end = start + per_caption
+                start = cursor
+                end = start + chunk["word_count"] * seconds_per_word
+                cursor = end
                 caption_file = _write_caption_file(
-                    chunk, os.path.join(work_dir, f"caption_{i:02d}.txt")
+                    chunk["text"], os.path.join(work_dir, f"caption_{i:02d}.txt")
                 )
                 filters.append(
-                    f"drawtext=textfile='{caption_file}':fontcolor=white:fontsize=64:"
-                    "box=1:boxcolor=black@0.55:boxborderw=18:"
+                    f"drawtext=fontfile='{FONT_PATH}':textfile='{caption_file}':"
+                    f"fontcolor=white:fontsize={CAPTION_FONT_SIZE}:"
+                    f"borderw={CAPTION_OUTLINE_WIDTH}:bordercolor=black:"
                     "x=(w-text_w)/2:y=h*0.78:"
                     f"enable='between(t,{start:.2f},{end:.2f})'"
                 )
