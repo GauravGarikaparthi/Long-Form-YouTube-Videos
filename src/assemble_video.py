@@ -1,6 +1,6 @@
 """
-Assembles the final video from stock clips + voiceover using ffmpeg.
-Requires ffmpeg and ffprobe to be installed and on PATH.
+Assembles the final video from stock clips + voiceover (+ optional background
+music) using ffmpeg. Requires ffmpeg and ffprobe to be installed and on PATH.
 """
 
 import math
@@ -8,10 +8,14 @@ import os
 import re
 import subprocess
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 MAX_CAPTION_WORDS = 6
-XFADE_DURATION = 0.35  # seconds -- crossfade dissolve length between scenes
+XFADE_DURATION = 0.35  # seconds -- short, snappy cuts for fast-paced retention editing
 TARGET_FPS = 25  # every clip must share this exactly, or xfade can fail/crash
+
+# Cycled per cut instead of always "fade" -- slideleft/slideright/hblur read as
+# quick whip-pan-style swipes, giving cuts more energy and visual variety.
 TRANSITIONS = ["fade", "slideleft", "hblur", "slideright", "wiperight", "wipeleft"]
 
 # Clean, bold sans-serif for all on-screen text (captions + title card).
@@ -23,12 +27,16 @@ CAPTION_FONT_SIZE = 66
 CAPTION_OUTLINE_WIDTH = 7
 TITLE_FONT_SIZE = 58
 
+# Background music is ducked well under the voiceover -- it's there for pacing
+# and energy, never to compete with narration intelligibility.
+MUSIC_VOLUME = 0.10
+MUSIC_FADE_SECONDS = 1.5
+
+
 def _run_ffmpeg(args: list[str]) -> None:
     """
     subprocess.run wrapper that actually prints ffmpeg's stderr when a step
-    fails, instead of just the bare command in a CalledProcessError --
-    capture_output=True was hiding the real reason for every failure here,
-    forcing a guess-and-check loop from the caller's side every single time.
+    fails, instead of just the bare command in a CalledProcessError.
     """
     result = subprocess.run(args, capture_output=True)
     if result.returncode != 0:
@@ -49,12 +57,6 @@ def _get_duration(path: str) -> float:
 
 
 def _write_caption_file(text: str, path: str) -> str:
-    # Sidesteps ffmpeg's drawtext filtergraph string-escaping entirely --
-    # apostrophes, colons, and other punctuation in the caption text need no
-    # special handling at all when read from a file via textfile=, unlike an
-    # inline text='...' value (which turned out to mis-parse apostrophes in
-    # this ffmpeg build, silently swallowing the rest of the filter chain as
-    # literal on-screen text).
     with open(path, "w") as f:
         f.write(text)
     return path
@@ -82,12 +84,13 @@ def _chunk_narration_for_captions(narration: str, max_words: int = MAX_CAPTION_W
 
     return chunks
 
+
 def _motion_filter(width: int, height: int, frames: int, fps: int, slot_index: int) -> str:
     """
     Subtle zoom/pan movement for each segment -- gives static-feeling stock
     footage dynamic, parallax/Ken-Burns-style camera motion instead of a flat,
     unmoving shot. Cycles through a few presets so consecutive clips don't all
-    move identically (same technique generate_illustrations.py uses).
+    move identically.
     """
     presets = [
         ("min(zoom+0.0012,1.15)", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"),
@@ -98,6 +101,34 @@ def _motion_filter(width: int, height: int, frames: int, fps: int, slot_index: i
     zoom_expr, x_expr, y_expr = presets[slot_index % len(presets)]
     return f"zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}':d={frames}:s={width}x{height}:fps={fps}"
 
+
+def _render_segment(job: tuple) -> tuple:
+    """
+    Renders one looped, motion-cropped segment directly from its source clip
+    -- scale/crop/motion/loop all in a single ffmpeg pass, instead of a
+    separate "normalize the clip" pass followed by a second "loop it" pass.
+    Runs in a worker thread: each call is an independent subprocess, so
+    segments for different clips render concurrently rather than one at a
+    time, which is the single biggest time cost in the whole pipeline on a
+    multi-core CI runner.
+    """
+    slot_index, clip, seg_path, per_clip_seconds, width, height = job
+    frames = max(int(per_clip_seconds * TARGET_FPS), 1)
+    motion = _motion_filter(width, height, frames, TARGET_FPS, slot_index)
+    _run_ffmpeg(
+        [
+            "ffmpeg", "-y", "-stream_loop", "-1", "-t", str(per_clip_seconds), "-i", clip,
+            "-vf",
+            f"scale={width * 2}:{height * 2}:force_original_aspect_ratio=increase,"
+            f"crop={width * 2}:{height * 2},{motion}",
+            "-r", str(TARGET_FPS),
+            "-c:v", "libx264", "-preset", "veryfast", "-threads", "0",
+            seg_path,
+        ]
+    )
+    return slot_index, seg_path
+
+
 def assemble_video(
     clip_paths: list[str],
     voiceover_path: str,
@@ -106,15 +137,18 @@ def assemble_video(
     work_dir: str = "work",
     vertical: bool = False,
     narration: str | None = None,
+    music_path: str | None = None,
 ):
     """
-    - Normalizes each clip to 1920x1080 (or 1080x1920 for Shorts), no audio
-    - Loops/trims clips to cover the voiceover's total duration
+    - Scales/crops each clip to 1920x1080 (or 1080x1920 for Shorts) with a
+      subtle zoom/pan motion, no audio
+    - Loops/trims clips to cover the voiceover's total duration, joined with
+      varied, fast crossfade-style transitions
     - Adds a simple title card overlay for the first 3 seconds
-    - If narration is given, burns in short dramatic captions (a handful of
-      words at a time, evenly timed across the rest of the video) --
-      matching the on-screen caption style common in this genre
-    - Muxes the voiceover as the audio track
+    - If narration is given, burns in bold, high-contrast-outline captions
+      timed proportional to word count
+    - Muxes the voiceover as the primary audio track, optionally layering a
+      ducked, looped, fade-out background music bed underneath (music_path)
     """
     os.makedirs(work_dir, exist_ok=True)
     voice_duration = _get_duration(voiceover_path)
@@ -123,68 +157,30 @@ def assemble_video(
     if not clip_paths:
         raise ValueError("No clips provided to assemble_video")
 
-    # Normalize clips first (scale/crop to target resolution, strip audio).
-    # Source clips (stock footage especially) commonly have different native
-    # frame rates from each other -- forcing a single TARGET_FPS here is
-    # required, not cosmetic: xfade later needs every chained input to share
-    # an identical frame rate or it can fail outright (observed in
-    # production: ffmpeg exit code 234 with mismatched-fps stock clips).
-    normalized = []
-    for i, clip in enumerate(clip_paths):
-        norm_path = os.path.join(work_dir, f"norm_{i:02d}.mp4")
-        _run_ffmpeg(
-            [
-                "ffmpeg", "-y", "-i", clip,
-                "-vf",
-                f"scale={width}:{height}:force_original_aspect_ratio=increase,"
-                f"crop={width}:{height},fps={TARGET_FPS}",
-                "-an", "-c:v", "libx264", "-preset", "veryfast",
-                norm_path,
-            ]
-        )
-        normalized.append(norm_path)
-
-    # Cross-dissolve between scenes instead of hard-cutting -- loops through
-    # normalized clips (repeating as needed) to cover voice_duration, same as
-    # before, but joins them with an xfade chain. +1 slot is extra slack so
-    # the crossfade overlaps never leave the merged sequence shorter than
-    # voice_duration (the final -t trims off any excess).
-    per_clip_seconds = max(voice_duration / len(normalized), 3)
+    per_clip_seconds = max(voice_duration / len(clip_paths), 3)
     n_slots = math.ceil(voice_duration / per_clip_seconds) + 1
 
-    concat_video_path = os.path.join(work_dir, "concat_video.mp4")
+    segment_jobs = [
+        (slot, clip_paths[slot % len(clip_paths)], os.path.join(work_dir, f"seg_{slot:02d}.mp4"),
+         per_clip_seconds, width, height)
+        for slot in range(n_slots)
+    ]
 
-    # Pre-render each slot to an exact, finite-duration segment file first --
-    # xfade needs every input to have a known, concrete duration to
-    # negotiate frame timing. Chaining xfade directly over "-stream_loop -1"
-    # (infinite) inputs is unreliable once there are more than a couple of
-    # them: the filtergraph can't cleanly synchronize several simultaneously
-    # open infinite streams and fails outright (observed in production:
-    # ffmpeg exit code 234 with 6 chained inputs).
-    segment_paths = []
-    for slot in range(n_slots):
-        clip = normalized[slot % len(normalized)]
-        seg_path = os.path.join(work_dir, f"seg_{slot:02d}.mp4")
-        frames = max(int(per_clip_seconds * TARGET_FPS), 1)
-        # Upscale 2x before zoompan so the crop/zoom has real detail to move
-        # into -- zooming at native resolution just softens the image.
-        motion = _motion_filter(width, height, frames, TARGET_FPS, slot)
-        _run_ffmpeg(
-            [
-                "ffmpeg", "-y", "-stream_loop", "-1", "-t", str(per_clip_seconds), "-i", clip,
-                "-vf", f"scale={width * 2}:{height * 2},{motion}",
-                "-r", str(TARGET_FPS),
-                "-c:v", "libx264", "-preset", "veryfast",
-                seg_path,
-            ]
-        )
-        segment_paths.append(seg_path)
+    # Segments are independent of each other, so render them concurrently.
+    segment_paths = [None] * n_slots
+    with ThreadPoolExecutor(max_workers=min(4, os.cpu_count() or 2)) as pool:
+        futures = [pool.submit(_render_segment, job) for job in segment_jobs]
+        for future in as_completed(futures):
+            slot_index, seg_path = future.result()
+            segment_paths[slot_index] = seg_path
+
+    concat_video_path = os.path.join(work_dir, "concat_video.mp4")
 
     if n_slots == 1:
         _run_ffmpeg(
             [
                 "ffmpeg", "-y", "-i", segment_paths[0], "-t", str(voice_duration),
-                "-c:v", "libx264", "-preset", "veryfast",
+                "-c:v", "libx264", "-preset", "veryfast", "-threads", "0",
                 concat_video_path,
             ]
         )
@@ -212,7 +208,7 @@ def assemble_video(
                 "ffmpeg", "-y", *input_args,
                 "-filter_complex", ";".join(filters),
                 "-map", f"[{prev_label}]",
-                "-c:v", "libx264", "-preset", "veryfast",
+                "-c:v", "libx264", "-preset", "veryfast", "-threads", "0",
                 "-t", str(voice_duration),
                 concat_video_path,
             ]
@@ -234,11 +230,6 @@ def assemble_video(
         remaining = max(voice_duration - caption_start, 0)
         total_words = sum(c["word_count"] for c in chunks) or 1
         if chunks and remaining > 0:
-            # Time each chunk proportional to its word count (roughly constant
-            # speaking rate) instead of splitting time evenly across chunks --
-            # this is a lightweight estimate, not frame-perfect forced
-            # alignment (Piper doesn't expose word-level timestamps), but it
-            # tracks real speech pacing far more closely than a flat split.
             seconds_per_word = remaining / total_words
             cursor = caption_start
             for i, chunk in enumerate(chunks):
@@ -256,20 +247,44 @@ def assemble_video(
                     f"enable='between(t,{start:.2f},{end:.2f})'"
                 )
 
-    # Add title + caption overlays, then mux the voiceover audio.
-    _run_ffmpeg(
-        [
-            "ffmpeg", "-y",
-            "-i", concat_video_path,
-            "-i", voiceover_path,
-            "-vf", ",".join(filters),
-            "-map", "0:v:0", "-map", "1:a:0",
-            "-c:v", "libx264", "-preset", "medium",
-            "-c:a", "aac", "-b:a", "192k",
-            "-shortest",
-            out_path,
-        ]
-    )
+    audio_inputs = ["-i", voiceover_path]
+    if music_path:
+        audio_inputs += ["-stream_loop", "-1", "-i", music_path]
+
+    if music_path:
+        fade_start = max(voice_duration - MUSIC_FADE_SECONDS, 0)
+        audio_filter = (
+            f"[2:a]volume={MUSIC_VOLUME},afade=t=out:st={fade_start:.2f}:d={MUSIC_FADE_SECONDS}[music];"
+            "[1:a][music]amix=inputs=2:duration=first:dropout_transition=0[aout]"
+        )
+        _run_ffmpeg(
+            [
+                "ffmpeg", "-y",
+                "-i", concat_video_path,
+                *audio_inputs,
+                "-vf", ",".join(filters),
+                "-filter_complex", audio_filter,
+                "-map", "0:v:0", "-map", "[aout]",
+                "-c:v", "libx264", "-preset", "medium", "-threads", "0",
+                "-c:a", "aac", "-b:a", "192k",
+                "-t", str(voice_duration),
+                out_path,
+            ]
+        )
+    else:
+        _run_ffmpeg(
+            [
+                "ffmpeg", "-y",
+                "-i", concat_video_path,
+                *audio_inputs,
+                "-vf", ",".join(filters),
+                "-map", "0:v:0", "-map", "1:a:0",
+                "-c:v", "libx264", "-preset", "medium", "-threads", "0",
+                "-c:a", "aac", "-b:a", "192k",
+                "-shortest",
+                out_path,
+            ]
+        )
 
     return out_path
 
