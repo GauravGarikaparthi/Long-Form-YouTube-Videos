@@ -48,9 +48,17 @@ def fetch_clips(
                 continue
 
         # Pick a mid-quality HD file to keep download size reasonable
-        video_files = sorted(videos[0]["video_files"], key=lambda v: _target_dimension(v, orientation))
-        candidates = [v for v in video_files if 1000 <= _target_dimension(v, orientation) <= 1920]
-        chosen = candidates[0] if candidates else video_files[-1]
+        def _target_dimension(video_file: dict, orientation: str) -> int:
+            """Pexels reports width/height per the clip's actual encoded orientation,
+            so the dimension we should filter/sort on flips between portrait and
+            landscape fetches."""
+            return video_file.get("height", 0) if orientation == "portrait" else video_file.get("width", 0)
+        
+
+        # inside fetch_clips(), replace the selection block with:
+            video_files = sorted(videos[0]["video_files"], key=lambda v: _target_dimension(v, orientation))
+            candidates = [v for v in video_files if 1000 <= _target_dimension(v, orientation) <= 1920]
+            chosen = candidates[0] if candidates else video_files[-1]
 
         out_path = os.path.join(out_dir, f"clip_{i:02d}.mp4")
         with requests.get(chosen["link"], stream=True, timeout=60) as r:
