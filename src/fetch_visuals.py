@@ -1,6 +1,4 @@
-"""
-Downloads stock video clips from Pexels based on keywords.
-"""
+"""Downloads stock video clips from Pexels based on keywords."""
 
 import os
 import requests
@@ -21,8 +19,8 @@ def fetch_clips(
     clips_per_keyword: int = 1,
     orientation: str = "landscape",
 ):
-    """
-    Downloads one clip per keyword into out_dir.
+    """Downloads one clip per keyword into out_dir.
+
     orientation: "landscape" for regular videos, "portrait" for Shorts.
     Returns a list of local file paths in the same order as keywords.
     """
@@ -32,33 +30,57 @@ def fetch_clips(
 
     paths = []
     for i, keyword in enumerate(keywords):
-        params = {"query": keyword, "per_page": clips_per_keyword, "orientation": orientation}
-        resp = requests.get(PEXELS_SEARCH_URL, headers=headers, params=params, timeout=30)
+        params = {
+            "query": keyword,
+            "per_page": clips_per_keyword,
+            "orientation": orientation,
+        }
+        resp = requests.get(
+            PEXELS_SEARCH_URL, headers=headers, params=params, timeout=30
+        )
         resp.raise_for_status()
         videos = resp.json().get("videos", [])
 
         if not videos:
-            print(f"[fetch_visuals] No clips found for '{keyword}', retrying with fallback query.")
+            print(
+                f"[fetch_visuals] No clips found for '{keyword}', retrying with"
+                " fallback query."
+            )
             params["query"] = FALLBACK_QUERY
-            resp = requests.get(PEXELS_SEARCH_URL, headers=headers, params=params, timeout=30)
+            resp = requests.get(
+                PEXELS_SEARCH_URL, headers=headers, params=params, timeout=30
+            )
             resp.raise_for_status()
             videos = resp.json().get("videos", [])
             if not videos:
-                print(f"[fetch_visuals] Fallback query also returned nothing, skipping clip {i}.")
+                print(
+                    "[fetch_visuals] Fallback query also returned nothing,"
+                    f" skipping clip {i}."
+                )
                 continue
 
         # Pick a mid-quality HD file to keep download size reasonable
         def _target_dimension(video_file: dict, orientation: str) -> int:
             """Pexels reports width/height per the clip's actual encoded orientation,
-            so the dimension we should filter/sort on flips between portrait and
-            landscape fetches."""
-            return video_file.get("height", 0) if orientation == "portrait" else video_file.get("width", 0)
-        
 
-        # inside fetch_clips(), replace the selection block with:
-            video_files = sorted(videos[0]["video_files"], key=lambda v: _target_dimension(v, orientation))
-            candidates = [v for v in video_files if 1000 <= _target_dimension(v, orientation) <= 1920]
-            chosen = candidates[0] if candidates else video_files[-1]
+            so the dimension we should filter/sort on flips between portrait and
+            landscape fetches.
+            """
+            if orientation == "portrait":
+                return video_file.get("height", 0)
+            return video_file.get("width", 0)
+
+        # Corrected Indentation (Aligned to 8 spaces inside the loop)
+        video_files = sorted(
+            videos[0]["video_files"],
+            key=lambda v: _target_dimension(v, orientation),
+        )
+        candidates = [
+            v
+            for v in video_files
+            if 1000 <= _target_dimension(v, orientation) <= 1920
+        ]
+        chosen = candidates[0] if candidates else video_files[-1]
 
         out_path = os.path.join(out_dir, f"clip_{i:02d}.mp4")
         with requests.get(chosen["link"], stream=True, timeout=60) as r:
