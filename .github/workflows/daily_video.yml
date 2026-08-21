@@ -1,0 +1,132 @@
+name: Daily YouTube Video
+
+on:
+  schedule:
+    - cron: "0 14 * * *"   # runs daily at 14:00 UTC — change if you want a different time
+  workflow_dispatch:        # adds a manual "Run workflow" button in the Actions tab, with inputs below
+    inputs:
+      topic_mode:
+        description: "How to pick today's topic"
+        type: choice
+        default: category
+        options:
+          - trending
+          - category
+          - custom
+      category:
+        description: "Category to pick from (used only if topic_mode = category)"
+        type: choice
+        default: motivation
+        options:
+          - any
+          - facts
+          - science
+          - history
+          - motivation
+          - finance
+          - animals
+          - personality
+          - sports
+          - documentary
+          - islamic
+          - music
+          - horror
+          - cartoons
+      custom_topic:
+        description: "Exact topic to use (used only if topic_mode = custom)"
+        type: string
+        default: ""
+      video_mode:
+        description: "Upload as a regular video or a YouTube Short"
+        type: choice
+        default: shorts
+        options:
+          - video
+          - shorts
+      visual_style:
+        description: "Visuals: pexels (real stock footage) or illustration (AI-generated images via Pollinations)"
+        type: choice
+        default: pexels
+        options:
+          - pexels
+          - illustration
+      custom_visual_prompt:
+        description: "Exact image prompt for AI illustrations (used only if visual_style = illustration). Drives VISUALS only -- never spoken as narration."
+        type: string
+        default: ""
+      language:
+        description: "Script + voiceover language (Piper has no Urdu voice yet)"
+        type: choice
+        default: english
+        options:
+          - english
+          - spanish
+          - french
+          - german
+          - arabic
+          - hindi
+          - portuguese
+          - russian
+          - turkish
+          - chinese
+
+jobs:
+  build-and-upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ffmpeg (skip if already present)
+        timeout-minutes: 3
+        run: |
+          if command -v ffmpeg >/dev/null 2>&1; then
+            echo "ffmpeg already present: $(ffmpeg -version | head -1)"
+          else
+            sudo DEBIAN_FRONTEND=noninteractive apt-get update
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ffmpeg
+          fi
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Cache Piper voice models
+        uses: actions/cache@v4
+        with:
+          path: voices
+          # A key that never matches an existing entry (run_id is unique
+          # per run) guarantees this run always saves its (possibly
+          # updated) voices/ dir at the end, while restore-keys still
+          # pulls in the most recent prior snapshot -- lets the cache
+          # accumulate multiple language voices over time instead of
+          # pinning to one exact voice forever.
+          key: piper-voices-${{ github.run_id }}
+          restore-keys: |
+            piper-voices-
+
+      - name: Run daily video pipeline
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+          # Only present on manual "Run workflow" runs; scheduled runs get
+          # the defaults below -- locked to the "motivation" niche + Shorts
+          # so the channel builds one consistent identity instead of a
+          # random-topic grab-bag (see project decision: fresh channel,
+          # fixed niche, for algorithmic discovery).
+          TOPIC_MODE: ${{ github.event.inputs.topic_mode || 'category' }}
+          TOPIC_CATEGORY: ${{ github.event.inputs.category || 'motivation' }}
+          CUSTOM_TOPIC: ${{ github.event.inputs.custom_topic || '' }}
+          VIDEO_MODE: ${{ github.event.inputs.video_mode || 'shorts' }}
+          VISUAL_STYLE: ${{ github.event.inputs.visual_style || 'pexels' }}
+          CUSTOM_VISUAL_PROMPT: ${{ github.event.inputs.custom_visual_prompt || '' }}
+          LANGUAGE: ${{ github.event.inputs.language || 'english' }}
+        run: python main.py
