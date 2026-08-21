@@ -2,7 +2,7 @@ name: Daily YouTube Video
 
 on:
   schedule:
-    - cron: "0 14 * * *"   # runs daily at 14:00 UTC — change if you want a different time
+    - cron: "0 0,4,8,12,16,20 * * *"   # runs daily at 14:00 UTC — change if you want a different time
   workflow_dispatch:        # adds a manual "Run workflow" button in the Actions tab, with inputs below
     inputs:
       topic_mode:
@@ -92,6 +92,11 @@ jobs:
             sudo DEBIAN_FRONTEND=noninteractive apt-get update
             sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ffmpeg
           fi
+      - name: Download Montserrat Bold font (clean bold sans-serif for captions/titles)
+        run: |
+          mkdir -p fonts
+          curl -sL -o fonts/Montserrat-Bold.ttf \
+            https://raw.githubusercontent.com/JulietaUla/Montserrat/master/fonts/ttf/Montserrat-Bold.ttf
 
       - name: Install Python dependencies
         run: pip install -r requirements.txt
