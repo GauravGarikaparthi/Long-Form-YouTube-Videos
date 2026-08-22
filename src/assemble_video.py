@@ -23,6 +23,9 @@ TRANSITIONS = ["fade", "slideleft", "hblur", "slideright", "wiperight", "wipelef
 FONT_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "fonts", "Montserrat-Bold.ttf"
 )
+FONTS_DIR = os.path.dirname(FONT_PATH)  # libass looks up "Montserrat" by family name in this dir
+KARAOKE_BASE_COLOR = "&H00FFFFFF"       # white -- words before they're spoken
+KARAOKE_HIGHLIGHT_COLOR = "&H0000A5FF"  # orange -- sweeps in as each word is spoken
 CAPTION_FONT_SIZE = 66
 CAPTION_OUTLINE_WIDTH = 7
 TITLE_FONT_SIZE = 58
@@ -84,6 +87,66 @@ def _chunk_narration_for_captions(narration: str, max_words: int = MAX_CAPTION_W
 
     return chunks
 
+def _ass_timestamp(seconds: float) -> str:
+    """Formats seconds as an ASS timestamp: H:MM:SS.cc (centiseconds)."""
+    seconds = max(seconds, 0)
+    total_cs = int(round(seconds * 100))
+    h, rem = divmod(total_cs, 360000)
+    m, rem = divmod(rem, 6000)
+    s, cs = divmod(rem, 100)
+    return f"{h:d}:{m:02d}:{s:02d}.{cs:02d}"
+
+
+def _build_karaoke_ass(chunks: list[dict], caption_start: float, seconds_per_word: float,
+                        width: int, height: int, path: str) -> str:
+    """
+    Writes an .ass subtitle file with karaoke-style word highlighting: each
+    caption line is a short chunk (a handful of words, same chunks used for
+    plain captions before), and within a line each word's color sweeps from
+    white -> orange (\\kf) exactly when that word is spoken. Word timing
+    reuses seconds_per_word -- the same per-word duration the caller already
+    computed for chunk-to-chunk sync -- so the karaoke fill and the on-screen
+    chunk swap can never drift apart from each other.
+    """
+    margin_v = int(height * 0.16)
+    font_size = int(height * 0.034)
+
+    header = (
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        f"PlayResX: {width}\n"
+        f"PlayResY: {height}\n"
+        "WrapStyle: 2\n"
+        "ScaledBorderAndShadow: yes\n\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, "
+        "BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, "
+        "BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        f"Style: Karaoke,Montserrat,{font_size},{KARAOKE_HIGHLIGHT_COLOR},{KARAOKE_BASE_COLOR},"
+        f"&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,6,0,2,60,60,{margin_v},1\n\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    )
+
+    lines = [header]
+    cursor = caption_start
+    for chunk in chunks:
+        words = chunk["text"].split()
+        if not words:
+            continue
+        start = cursor
+        end = start + len(words) * seconds_per_word
+        cursor = end
+        # \kf<centiseconds> sweeps that word from SecondaryColour to
+        # PrimaryColour over its spoken duration -- the classic karaoke fill.
+        karaoke_text = "".join(f"{{\\kf{int(round(seconds_per_word * 100))}}}{w} " for w in words).strip()
+        lines.append(
+            f"Dialogue: 0,{_ass_timestamp(start)},{_ass_timestamp(end)},Karaoke,,0,0,0,,{karaoke_text}\n"
+        )
+
+    with open(path, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+    return path
 
 def _motion_filter(width: int, height: int, frames: int, fps: int, slot_index: int) -> str:
     """
@@ -231,21 +294,13 @@ def assemble_video(
         total_words = sum(c["word_count"] for c in chunks) or 1
         if chunks and remaining > 0:
             seconds_per_word = remaining / total_words
-            cursor = caption_start
-            for i, chunk in enumerate(chunks):
-                start = cursor
-                end = start + chunk["word_count"] * seconds_per_word
-                cursor = end
-                caption_file = _write_caption_file(
-                    chunk["text"], os.path.join(work_dir, f"caption_{i:02d}.txt")
-                )
-                filters.append(
-                    f"drawtext=fontfile='{FONT_PATH}':textfile='{caption_file}':"
-                    f"fontcolor=white:fontsize={CAPTION_FONT_SIZE}:"
-                    f"borderw={CAPTION_OUTLINE_WIDTH}:bordercolor=black:"
-                    "x=(w-text_w)/2:y=h*0.78:"
-                    f"enable='between(t,{start:.2f},{end:.2f})'"
-                )
+            ass_path = os.path.join(work_dir, "captions.ass")
+            _build_karaoke_ass(chunks, caption_start, seconds_per_word, width, height, ass_path)
+            # fontsdir points libass at the repo's bundled Montserrat file so it
+            # resolves the "Montserrat" family without needing a system-wide
+            # font install on the CI runner.
+            filters.append(f"subtitles={ass_path}:fontsdir={FONTS_DIR}")
+                
 
     audio_inputs = ["-i", voiceover_path]
     if music_path:
