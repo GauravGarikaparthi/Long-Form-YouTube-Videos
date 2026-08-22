@@ -52,9 +52,12 @@ This isn't just style -- narration is auto-split into on-screen caption chunks b
 so short, self-contained sentences read as clean, well-timed captions instead of being \
 awkwardly chopped mid-thought.
 
-Clear simple sentences, no fluff, no stage directions, no headers - just spoken narration \
-text. Return ONLY valid JSON, no markdown fences, no preamble."""
+LENGTH CAPS (hard limits, do not exceed): narration must be 90-130 words total (30-45 \
+seconds spoken). description must be 3-5 sentences. tags must be 8-12 items. Stop as soon \
+as the JSON object is complete -- no trailing commentary, no repeated fields.
 
+Clear simple sentences, no fluff, no stage directions, no headers - just spoken narration \
+text. Return ONLY valid JSON, no markdown fences, no preamble.
 
 def generate_script(
     topic: str,
@@ -123,7 +126,7 @@ castle" or "knights sword fight", not the show's name or any character name)."""
 
     response = client.chat.completions.create(
         model=MODEL,
-        max_tokens=2048,
+        max_tokens=4096,
         response_format={"type": "json_object"},
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
