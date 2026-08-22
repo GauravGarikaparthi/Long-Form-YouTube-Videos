@@ -22,7 +22,7 @@ LANGUAGE_VOICES = {
 # Piper via LANGUAGE_VOICES above (German, Arabic, Russian, Turkish as of
 # this writing) so they keep working rather than breaking silently.
 KOKORO_SUPPORTED_LANGUAGES = {
-    "english": ("am_adam", "a"),  # deep, natural male voice, American English
+    "english": ("am_adam", "en-us"),  # deep, natural male voice, American English
 }
 
 LANGUAGE_NAMES = {
