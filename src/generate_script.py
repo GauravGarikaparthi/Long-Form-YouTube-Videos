@@ -57,7 +57,8 @@ seconds spoken). description must be 3-5 sentences. tags must be 8-12 items. Sto
 as the JSON object is complete -- no trailing commentary, no repeated fields.
 
 Clear simple sentences, no fluff, no stage directions, no headers - just spoken narration \
-text. Return ONLY valid JSON, no markdown fences, no preamble.
+text. Return ONLY valid JSON, no markdown fences, no preamble."""
+
 
 def generate_script(
     topic: str,
@@ -144,6 +145,7 @@ castle" or "knights sword fight", not the show's name or any character name)."""
     text = text.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
 
     return json.loads(text)
+
 
 if __name__ == "__main__":
     import sys
