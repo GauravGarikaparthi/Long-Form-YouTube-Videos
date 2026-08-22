@@ -19,7 +19,6 @@ from generate_illustrations import generate_illustrations
 from assemble_video import assemble_video
 from generate_thumbnail import generate_thumbnail
 from upload_youtube import upload_video
-from languages import voice_for_language
 from select_music import pick_track
 
 WORK_DIR = "work"
@@ -76,8 +75,8 @@ def run():
 
     print(f"Step 4/7: Generating voiceover ({language})...")
     voiceover_path = os.path.join(WORK_DIR, "voiceover.wav")
-    generate_voiceover(package["narration"], voiceover_path, voice=voice_for_language(language))
-
+    generate_voiceover(package["narration"], voiceover_path, language=language)
+    
     music_path = pick_track()
     if music_path:
         print(f"  -> Background music: {os.path.basename(music_path)}")
