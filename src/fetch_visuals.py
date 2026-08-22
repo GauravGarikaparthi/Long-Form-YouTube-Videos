@@ -1,93 +1,164 @@
-"""Downloads stock video clips from Pexels based on keywords."""
+"""
+Downloads stock video clips for each keyword, trying providers in this order
+so one provider having no match (or a rate limit) doesn't shrink the video:
+  1. Pexels (primary; PEXELS_API_KEY)
+  2. Pixabay (documented Videos API at pixabay.com/api/videos/; optional
+     PIXABAY_API_KEY) -- unlike Pixabay's Music library, Images and Videos
+     are real, stable, documented endpoints
+  3. A small, hand-curated local Mixkit folder (mixkit/<orientation>/*.mp4)
+     -- Mixkit has no public API at all, so this is a manually-downloaded
+     fallback library, same approach as select_music.py takes for music
+"""
 
 import os
+import random
 import requests
 
 from _sanitize import sanitize_credential
 
 PEXELS_SEARCH_URL = "https://api.pexels.com/videos/search"
-
-# Used when a keyword (e.g. a proper noun the script model slipped in) matches
-# nothing on Pexels, so one bad keyword doesn't just shrink the video by a clip.
+PIXABAY_SEARCH_URL = "https://pixabay.com/api/videos/"
+MIXKIT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "mixkit")
 FALLBACK_QUERY = "cinematic b-roll"
+
+
+def _target_dimension(width: int, height: int, orientation: str) -> int:
+    return height if orientation == "portrait" else width
+
+
+def _download(url: str, out_path: str) -> None:
+    with requests.get(url, stream=True, timeout=60) as r:
+        r.raise_for_status()
+        with open(out_path, "wb") as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                f.write(chunk)
+
+
+def _fetch_from_pexels(query, out_path, api_key, orientation, per_page=1) -> bool:
+    headers = {"Authorization": api_key}
+    params = {"query": query, "per_page": per_page, "orientation": orientation}
+    resp = requests.get(PEXELS_SEARCH_URL, headers=headers, params=params, timeout=30)
+    resp.raise_for_status()
+    videos = resp.json().get("videos", [])
+    if not videos:
+        return False
+
+    video_files = sorted(
+        videos[0]["video_files"],
+        key=lambda v: _target_dimension(v.get("width", 0), v.get("height", 0), orientation),
+    )
+    candidates = [
+        v for v in video_files
+        if 1000 <= _target_dimension(v.get("width", 0), v.get("height", 0), orientation) <= 1920
+    ]
+    chosen = candidates[0] if candidates else video_files[-1]
+    _download(chosen["link"], out_path)
+    return True
+
+
+def _fetch_from_pixabay(query, out_path, api_key, orientation, per_page=3) -> bool:
+    """
+    Pixabay's Videos API has no orientation filter (unlike its Images API),
+    so a hit is only accepted if one of its size variants actually matches
+    the requested orientation by aspect ratio. Most Pixabay video
+    contributions are landscape, so a "portrait" search legitimately
+    returning nothing here is expected -- the caller moves on to Mixkit.
+    """
+    params = {"key": api_key, "q": query, "per_page": max(per_page, 3), "safesearch": "true"}
+    resp = requests.get(PIXABAY_SEARCH_URL, params=params, timeout=30)
+    resp.raise_for_status()
+    hits = resp.json().get("hits", [])
+
+    for hit in hits:
+        variants = [v for v in hit.get("videos", {}).values() if v.get("width") and v.get("height")]
+        if orientation == "portrait":
+            variants = [v for v in variants if v["height"] > v["width"]]
+        else:
+            variants = [v for v in variants if v["width"] >= v["height"]]
+        if not variants:
+            continue
+        variants.sort(key=lambda v: _target_dimension(v["width"], v["height"], orientation))
+        candidates = [
+            v for v in variants
+            if 1000 <= _target_dimension(v["width"], v["height"], orientation) <= 1920
+        ]
+        chosen = candidates[0] if candidates else variants[-1]
+        _download(chosen["url"], out_path)
+        return True
+
+    return False
+
+
+def _fetch_from_mixkit_library(out_path, orientation) -> bool:
+    """
+    Reads from a small, hand-downloaded local library instead of a live API
+    call (Mixkit has none). Populate mixkit/landscape/ and mixkit/portrait/
+    with a handful of generic b-roll clips (city, nature, abstract motion)
+    downloaded by hand from mixkit.co/free-stock-video/ -- this is a
+    last-resort fallback, so exact keyword matching isn't expected here.
+    """
+    folder = os.path.join(MIXKIT_DIR, orientation)
+    if not os.path.isdir(folder):
+        return False
+    clips = [f for f in os.listdir(folder) if f.lower().endswith(".mp4")]
+    if not clips:
+        return False
+    src_path = os.path.join(folder, random.choice(clips))
+    with open(src_path, "rb") as src, open(out_path, "wb") as dst:
+        dst.write(src.read())
+    return True
 
 
 def fetch_clips(
     keywords: list[str],
     out_dir: str,
     api_key: str | None = None,
+    pixabay_api_key: str | None = None,
     clips_per_keyword: int = 1,
     orientation: str = "landscape",
 ):
-    """Downloads one clip per keyword into out_dir.
-
-    orientation: "landscape" for regular videos, "portrait" for Shorts.
-    Returns a list of local file paths in the same order as keywords.
     """
-    api_key = sanitize_credential(api_key or os.environ["PEXELS_API_KEY"])
-    headers = {"Authorization": api_key}
+    Downloads one clip per keyword into out_dir, trying Pexels -> Pixabay ->
+    local Mixkit library -> a generic fallback query, in that order. Returns
+    local file paths in the same order as keywords (skipping any keyword
+    that fails on every provider).
+    """
+    pexels_key = sanitize_credential(api_key or os.environ["PEXELS_API_KEY"])
+    raw_pixabay_key = pixabay_api_key or os.environ.get("PIXABAY_API_KEY", "")
+    pixabay_key = sanitize_credential(raw_pixabay_key) if raw_pixabay_key.strip() else None
+
     os.makedirs(out_dir, exist_ok=True)
-
     paths = []
+
     for i, keyword in enumerate(keywords):
-        params = {
-            "query": keyword,
-            "per_page": clips_per_keyword,
-            "orientation": orientation,
-        }
-        resp = requests.get(
-            PEXELS_SEARCH_URL, headers=headers, params=params, timeout=30
-        )
-        resp.raise_for_status()
-        videos = resp.json().get("videos", [])
-
-        if not videos:
-            print(
-                f"[fetch_visuals] No clips found for '{keyword}', retrying with"
-                " fallback query."
-            )
-            params["query"] = FALLBACK_QUERY
-            resp = requests.get(
-                PEXELS_SEARCH_URL, headers=headers, params=params, timeout=30
-            )
-            resp.raise_for_status()
-            videos = resp.json().get("videos", [])
-            if not videos:
-                print(
-                    "[fetch_visuals] Fallback query also returned nothing,"
-                    f" skipping clip {i}."
-                )
-                continue
-
-        # Pick a mid-quality HD file to keep download size reasonable
-        def _target_dimension(video_file: dict, orientation: str) -> int:
-            """Pexels reports width/height per the clip's actual encoded orientation,
-
-            so the dimension we should filter/sort on flips between portrait and
-            landscape fetches.
-            """
-            if orientation == "portrait":
-                return video_file.get("height", 0)
-            return video_file.get("width", 0)
-
-        # Corrected Indentation (Aligned to 8 spaces inside the loop)
-        video_files = sorted(
-            videos[0]["video_files"],
-            key=lambda v: _target_dimension(v, orientation),
-        )
-        candidates = [
-            v
-            for v in video_files
-            if 1000 <= _target_dimension(v, orientation) <= 1920
-        ]
-        chosen = candidates[0] if candidates else video_files[-1]
-
         out_path = os.path.join(out_dir, f"clip_{i:02d}.mp4")
-        with requests.get(chosen["link"], stream=True, timeout=60) as r:
-            r.raise_for_status()
-            with open(out_path, "wb") as f:
-                for chunk in r.iter_content(chunk_size=8192):
-                    f.write(chunk)
+        found = False
+
+        for query in (keyword, FALLBACK_QUERY):
+            try:
+                if _fetch_from_pexels(query, out_path, pexels_key, orientation, clips_per_keyword):
+                    found = True
+                    break
+            except requests.RequestException as e:
+                print(f"[fetch_visuals] Pexels request failed for '{query}': {e}")
+
+        if not found and pixabay_key:
+            for query in (keyword, FALLBACK_QUERY):
+                try:
+                    if _fetch_from_pixabay(query, out_path, pixabay_key, orientation, clips_per_keyword):
+                        found = True
+                        break
+                except requests.RequestException as e:
+                    print(f"[fetch_visuals] Pixabay request failed for '{query}': {e}")
+
+        if not found:
+            found = _fetch_from_mixkit_library(out_path, orientation)
+            if found:
+                print(f"[fetch_visuals] Used local Mixkit fallback clip for '{keyword}'.")
+
+        if not found:
+            print(f"[fetch_visuals] No clip found for '{keyword}' on any provider, skipping.")
+            continue
 
         paths.append(out_path)
 
