@@ -115,7 +115,7 @@ castle" or "knights sword fight", not the show's name or any character name)."""
 
     response = client.chat.completions.create(
         model=MODEL,
-        max_tokens=1500,
+        max_tokens=2048,
         response_format={"type": "json_object"},
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -124,11 +124,15 @@ castle" or "knights sword fight", not the show's name or any character name)."""
     )
 
     text = response.choices[0].message.content.strip()
+    if not text:
+        raise RuntimeError(
+            "Groq returned an empty response (likely truncated before completing valid "
+            "JSON). Try increasing max_tokens further if this recurs."
+        )
     # Defensive cleanup in case the model wraps in a code fence anyway
     text = text.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
 
     return json.loads(text)
-
 
 if __name__ == "__main__":
     import sys
