@@ -11,16 +11,12 @@ Extends assemble_video.py with:
 
 from __future__ import annotations
 
-import os
 from typing import Sequence
 
 from viral_templates import (
     ViralTemplateType,
-    TemplateConfig,
     get_template_config,
-    select_best_template,
 )
-
 
 def get_template_transitions(template_type: ViralTemplateType) -> list[str]:
     """Get optimal transition sequence for a template."""

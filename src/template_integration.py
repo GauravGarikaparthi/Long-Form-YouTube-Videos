@@ -21,7 +21,6 @@ from dataclasses import replace
 from viral_captions import CAPTION_STYLES
 from viral_templates import (
     DEFAULT_TEMPLATE,
-    TEMPLATES,
     TemplateConfig,
     get_template,
     list_templates,
@@ -45,6 +44,7 @@ def apply_template_to_pipeline(
                 if a fast template demands more scenes than there are clips,
                 a warning is logged (clips simply cycle; nothing breaks).
     duration:   optional voiceover duration hint (informational only today).
+    """
     """
     choice = env_str("VIRAL_TEMPLATE", "auto").lower()
 
