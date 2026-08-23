@@ -19,13 +19,9 @@ from viral_templates import (
     describe_template,
 )
 from template_utils import (
-    get_template_recommendation,
-    validate_template_compatibility,
     get_template_color_grade,
     get_music_emphasis_mix,
-    should_enable_zoom_pan,
-    should_sync_to_music_beats,
-    get_template_transitions,
+    validate_template_compatibility,
 )
 
 
