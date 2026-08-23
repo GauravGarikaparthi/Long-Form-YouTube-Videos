@@ -3,19 +3,49 @@ Assembles the final Shorts-ready video from stock clips + voiceover
 (+ optional background music) using ffmpeg.
 
 Requires ffmpeg and ffprobe on PATH. No extra Python video libraries.
+
+High-retention rendering pipeline (unchanged core):
+- Center-crops every clip to 1080x1920 (9:16) when vertical, else 1920x1080
+- Cuts every 1.5-2.5s with a 1.1x zoom/pan reset so long shots stay lively
+- Burns 1-3 word KARAOKE captions (word-by-word highlight) centered on screen
+- Wraps the last frames into the first for a seamless Shorts auto-replay loop
+- Mixes narration over a quiet music bed
+
+Fixes layered on top of that core:
+1. AUDIO IS GUARANTEED -- the voiceover is validated BEFORE rendering (must
+   exist, probe cleanly, contain a real audio stream, positive duration) and
+   the FINISHED file is probed after muxing: a silent output RAISES instead
+   of shipping a mute Short.
+2. EXACTLY CENTERED CAPTIONS -- karaoke blocks are pinned at the true frame
+   center (\\an5 at x=50%, y=50%), inside the Shorts UI safe zone.
+3. TEMPLATE-DRIVEN LOOK -- transitions, pacing, caption style, music level,
+   voice gain and color grade all come from a TemplateConfig (see
+   viral_templates.py); passing no config preserves the previous tuned look.
+4. PERFORMANCE -- hardware H.264 encoders (VideoToolbox/NVENC) are
+   auto-detected and used everywhere they exist; ffmpeg runs through a
+   hardened wrapper (suppressed noise, stderr tail on failure, retries).
 """
 
 from __future__ import annotations
 
-import json
+import math
 import os
 import re
-import subprocess
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# Micro-pacing: visual cuts every 1.5–2.5s (cycled so consecutive shots differ).
-CLIP_DURATIONS = (1.6, 2.1, 1.8, 2.4, 1.5, 2.5, 1.9, 2.2)
-XFADE_DURATION = 0.18
+from performance_optimizer import (
+    has_audio_stream,
+    log,
+    media_duration,
+    run_ffmpeg,
+    video_encode_args,
+)
+from template_utils import find_music_track
+from viral_captions import ass_font_size, ass_style_line
+from viral_templates import DEFAULT_TEMPLATE, TemplateConfig
+from viral_transitions import cycle_transitions
+
+XFADE_MIN = 0.12
+XFADE_MAX = 0.60
 LOOP_XFADE = 0.40
 TARGET_FPS = 25
 MAX_SHORTS_SECONDS = 55.0
@@ -24,47 +54,19 @@ MAX_SHORTS_SECONDS = 55.0
 SHORTS_WIDTH = 1080
 SHORTS_HEIGHT = 1920
 
-TRANSITIONS = ["fade", "slideleft", "hblur", "slideright", "wiperight", "wipeleft"]
-
 FONT_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "fonts", "Montserrat-Bold.ttf"
 )
 FONTS_DIR = os.path.dirname(FONT_PATH)
 
-# ASS colours are &HAABBGGRR. Yellow fill, white karaoke base, black outline.
-CAPTION_FILL = "&H0000FFFF"
-CAPTION_BASE = "&H00FFFFFF"
-CAPTION_OUTLINE = "&H00000000"
+# ASS colours are &HAABBGGRR (see viral_captions.hex_to_ass). Kept for the
+# title drawtext (which is plain white-on-box, not style-driven).
 MAX_CAPTION_WORDS = 3
 TITLE_FONT_SIZE = 52
 
-# ~15% linear / -20 dB — present but never competing with Piper TTS.
-MUSIC_VOLUME_DB = -20
+# ~10% linear (-20 dB) default music bed when no template overrides it.
+DEFAULT_MUSIC_VOLUME = 0.10
 VOICE_FADE_MS = 0.04
-
-
-def _run_ffmpeg(args: list[str]) -> None:
-    result = subprocess.run(args, capture_output=True)
-    if result.returncode != 0:
-        stderr_tail = result.stderr.decode(errors="replace")[-4000:]
-        print(f"[assemble_video] ffmpeg failed (exit {result.returncode}). Last output:\n{stderr_tail}")
-        raise subprocess.CalledProcessError(
-            result.returncode, args, output=result.stdout, stderr=result.stderr
-        )
-
-
-def _get_duration(path: str) -> float:
-    result = subprocess.run(
-        [
-            "ffprobe", "-v", "error", "-show_entries", "format=duration",
-            "-of", "json", path,
-        ],
-        capture_output=True, text=True, check=True,
-    )
-    try:
-        return float(json.loads(result.stdout)["format"]["duration"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise RuntimeError(f"Could not read duration for {path!r}") from exc
 
 
 def _escape_ffmpeg_path(path: str) -> str:
@@ -78,7 +80,7 @@ def _write_caption_file(text: str, path: str) -> str:
 
 
 def _chunk_narration_for_captions(narration: str, max_words: int = MAX_CAPTION_WORDS) -> list[dict]:
-    """1–3 word kinetic chunks, timed later from the real voiceover duration."""
+    """1-3 word kinetic chunks, timed later from the real voiceover duration."""
     sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", narration.strip()) if s.strip()]
     chunks: list[dict] = []
     for sentence in sentences:
@@ -111,17 +113,17 @@ def _build_karaoke_ass(
     width: int,
     height: int,
     path: str,
+    style_key: str,
 ) -> str:
     """
-    Kinetic captions in the YouTube Shorts UI safe zone:
-    middle-third vertically, horizontally centered, extra right margin so
-    the like/description stack (right ~10%) and bottom ~20% stay clear.
+    Kinetic karaoke captions CENTERED on the frame (\\an5 at x=50%, y=50%),
+    with margins keeping text clear of the right-side Shorts UI stack.
+    The style line (colors/outline/shadow) comes from the active template's
+    caption_style via viral_captions.
     """
-    font_size = int(height * 0.048)
-    # Alignment 5 = middle-center. MarginR ~10% of canvas; MarginV unused for align 5
-    # so we pin with \pos to the vertical center of the middle third (y = 50%).
-    pos_x = int(width * 0.45)
-    pos_y = int(height * 0.50)
+    font_size = ass_font_size(height)
+    pos_x = width // 2          # <-- exact horizontal center (the fix)
+    pos_y = int(height * 0.50)  # vertical center of the middle third
     margin_l = int(width * 0.08)
     margin_r = int(width * 0.12)
 
@@ -136,8 +138,7 @@ def _build_karaoke_ass(
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, "
         "BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, "
         "BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
-        f"Style: Kinetic,Montserrat,{font_size},{CAPTION_FILL},{CAPTION_BASE},"
-        f"{CAPTION_OUTLINE},&H00000000,-1,0,0,0,100,100,0,0,1,8,0,5,{margin_l},{margin_r},0,1\n\n"
+        f"{ass_style_line(style_key, font_size)}\n\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     )
@@ -153,7 +154,8 @@ def _build_karaoke_ass(
         cursor = end
         kf = max(int(round(seconds_per_word * 100)), 8)
         karaoke = "".join(f"{{\\kf{kf}}}{_ass_escape(w)} " for w in words).strip()
-        # \pos keeps the block in the middle third; \fsp adds a bit of tracking.
+        # \an5 + \pos pins the CENTER of the text block at (pos_x, pos_y),
+        # so multi-line wraps stay centered as well.
         text = f"{{\\an5\\pos({pos_x},{pos_y})\\fsp2}}{karaoke}"
         lines.append(
             f"Dialogue: 0,{_ass_timestamp(start)},{_ass_timestamp(end)},Kinetic,,0,0,0,,{text}\n"
@@ -184,8 +186,9 @@ def _motion_filter(width: int, height: int, frames: int, fps: int, slot_index: i
 
 def _center_crop_chain(width: int, height: int) -> str:
     """
-    Scale with aspect preserved until the frame *covers* 9:16, then center-crop.
-    Horizontal 16:9 stock becomes a vertical punch-in, never a stretch.
+    Scale with aspect preserved until the frame *covers* the canvas, then
+    center-crop. Horizontal 16:9 stock becomes a vertical punch-in, never a
+    stretch.
     """
     return (
         f"scale={width}:{height}:force_original_aspect_ratio=increase:force_divisible_by=2,"
@@ -200,62 +203,88 @@ def _render_segment(job: tuple) -> tuple:
     cover = _center_crop_chain(width * 2, height * 2)
 
     try:
-        source_dur = _get_duration(clip)
-    except (subprocess.CalledProcessError, RuntimeError):
+        source_dur = media_duration(clip)
+    except (RuntimeError, FileNotFoundError):
         source_dur = 0.0
 
     input_args: list[str]
     if source_dur >= per_clip_seconds + 0.05:
+        # Start each reuse of a clip at a DIFFERENT offset (golden-ratio
+        # stride) so cycled clips don't repeat the same moment.
         spare = max(source_dur - per_clip_seconds, 0)
         start = (slot_index * 1.6180339887) % spare if spare > 0 else 0.0
         input_args = ["-ss", f"{start:.3f}", "-t", f"{per_clip_seconds:.3f}", "-i", clip]
     else:
         input_args = ["-stream_loop", "-1", "-t", f"{per_clip_seconds:.3f}", "-i", clip]
 
-    _run_ffmpeg(
+    run_ffmpeg(
         [
-            "ffmpeg", "-y", *input_args,
+            *input_args,
             "-vf", f"{cover},{motion}",
             "-r", str(TARGET_FPS),
             "-an",
-            "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-threads", "0",
+            *video_encode_args(),
+            "-threads", "0",
             seg_path,
-        ]
+        ],
+        desc=f"scene {slot_index} render",
     )
     return slot_index, seg_path
 
 
-def _plan_slots(voice_duration: float, n_clips: int) -> list[float]:
-    """Enough 1.5–2.5s shots to cover the voiceover after xfade shrinkage."""
+def _slot_durations(config: TemplateConfig) -> list[float]:
+    """
+    Scene-length pool: the template's explicit clip_durations when provided,
+    otherwise a varied pool derived around clip_seconds. Every entry is
+    clamped above the xfade duration so scenes never fully overlap.
+    """
+    if config.clip_durations:
+        pool = list(config.clip_durations)
+    else:
+        base = max(config.clip_seconds, 0.8)
+        pool = [round(base * f, 2) for f in (0.85, 1.1, 0.95, 1.25, 0.9, 1.15)]
+    floor = config.transition_duration + 0.2
+    return [max(d, floor) for d in pool] or [max(1.5, floor)]
+
+
+def _plan_slots(voice_duration: float, config: TemplateConfig) -> list[float]:
+    """Enough varied-length shots to cover the voiceover after xfade shrinkage."""
+    pool = _slot_durations(config)
+    td = config.transition_duration
     durations: list[float] = []
     covered = 0.0
     slot = 0
-    while covered < voice_duration + XFADE_DURATION:
-        dur = CLIP_DURATIONS[slot % len(CLIP_DURATIONS)]
+    while covered < voice_duration + td:
+        dur = pool[slot % len(pool)]
         durations.append(dur)
-        if slot == 0:
-            covered = dur
-        else:
-            covered += dur - XFADE_DURATION
+        covered = dur if slot == 0 else covered + dur - td
         slot += 1
         if slot > 80:
             break
-    if n_clips <= 0:
-        raise ValueError("No clips provided to assemble_video")
     return durations
 
 
-def _concat_with_xfade(segment_paths: list[str], durations: list[float], out_path: str, trim: float) -> None:
+def _concat_with_xfade(
+    segment_paths: list[str],
+    durations: list[float],
+    out_path: str,
+    trim: float,
+    config: TemplateConfig,
+) -> None:
     n_slots = len(segment_paths)
     if n_slots == 1:
-        _run_ffmpeg(
+        run_ffmpeg(
             [
-                "ffmpeg", "-y", "-i", segment_paths[0], "-t", f"{trim:.3f}",
-                "-c:v", "libx264", "-preset", "veryfast", "-an", "-threads", "0",
+                "-i", segment_paths[0], "-t", f"{trim:.3f}",
+                *video_encode_args(), "-an", "-threads", "0",
                 out_path,
-            ]
+            ],
+            desc="single-scene passthrough",
         )
         return
+
+    td = config.transition_duration
+    transitions = cycle_transitions(config.transitions, n_slots - 1)
 
     input_args: list[str] = []
     for seg_path in segment_paths:
@@ -265,25 +294,25 @@ def _concat_with_xfade(segment_paths: list[str], durations: list[float], out_pat
     prev_label = "0:v"
     cumulative = durations[0]
     for slot in range(1, n_slots):
-        offset = max(cumulative - XFADE_DURATION, 0)
+        offset = max(cumulative - td, 0)
         out_label = f"xf{slot}"
-        transition = TRANSITIONS[(slot - 1) % len(TRANSITIONS)]
         filters.append(
-            f"[{prev_label}][{slot}:v]xfade=transition={transition}:"
-            f"duration={XFADE_DURATION}:offset={offset:.3f}[{out_label}]"
+            f"[{prev_label}][{slot}:v]xfade=transition={transitions[slot - 1]}:"
+            f"duration={td:.3f}:offset={offset:.3f}[{out_label}]"
         )
         prev_label = out_label
-        cumulative += durations[slot] - XFADE_DURATION
+        cumulative += durations[slot] - td
 
-    _run_ffmpeg(
+    run_ffmpeg(
         [
-            "ffmpeg", "-y", *input_args,
+            *input_args,
             "-filter_complex", ";".join(filters),
             "-map", f"[{prev_label}]",
-            "-c:v", "libx264", "-preset", "veryfast", "-an", "-threads", "0",
+            *video_encode_args(), "-an", "-threads", "0",
             "-t", f"{trim:.3f}",
             out_path,
-        ]
+        ],
+        desc="transition merge",
     )
 
 
@@ -291,9 +320,9 @@ def _make_seamless_loop(src: str, dst: str, duration: float) -> None:
     """Crossfade the tail into the head so Shorts auto-replay feels continuous."""
     fade = min(LOOP_XFADE, max(duration * 0.08, 0.15))
     offset = max(duration - fade, 0)
-    _run_ffmpeg(
+    run_ffmpeg(
         [
-            "ffmpeg", "-y", "-i", src,
+            "-i", src,
             "-filter_complex",
             (
                 f"[0:v]split=2[main][head];"
@@ -302,10 +331,51 @@ def _make_seamless_loop(src: str, dst: str, duration: float) -> None:
             ),
             "-map", "[vout]",
             "-t", f"{duration:.3f}",
-            "-c:v", "libx264", "-preset", "veryfast", "-an", "-pix_fmt", "yuv420p", "-threads", "0",
+            *video_encode_args(), "-an", "-threads", "0",
             dst,
-        ]
+        ],
+        desc="seamless loop",
     )
+
+
+def _linear_to_db(volume: float) -> float:
+    """Linear gain -> dB for ffmpeg's volume filter (volume=0 -> mute)."""
+    if volume <= 0:
+        return -60.0
+    return 20.0 * math.log10(volume)
+
+
+def _validate_inputs(clip_paths: list[str], voiceover_path: str) -> float:
+    """
+    Fail-fast validation. THE silent-upload root cause lived here: nothing
+    previously verified the voiceover before building a video around it.
+    Returns the (capped) voiceover duration.
+    """
+    if not clip_paths:
+        raise ValueError("No clips provided to assemble_video")
+    missing = [p for p in clip_paths if not os.path.isfile(p)]
+    if missing:
+        raise FileNotFoundError(
+            f"{len(missing)} clip file(s) missing on disk: {missing[:3]}"
+            f"{'...' if len(missing) > 3 else ''}"
+        )
+
+    if not os.path.isfile(voiceover_path):
+        raise FileNotFoundError(
+            f"Voiceover file not found: '{voiceover_path}'. "
+            "Refusing to assemble a Short without narration audio."
+        )
+    voice_duration = min(media_duration(voiceover_path), MAX_SHORTS_SECONDS)
+    if not has_audio_stream(voiceover_path):
+        raise RuntimeError(
+            f"Voiceover '{voiceover_path}' contains NO audio stream. "
+            "Regenerate it (generate_voiceover.py) before assembling."
+        )
+    if voice_duration < 0.5:
+        raise RuntimeError(
+            f"Voiceover duration ({voice_duration:.2f}s) is too short to build a video."
+        )
+    return voice_duration
 
 
 def assemble_video(
@@ -317,26 +387,47 @@ def assemble_video(
     vertical: bool = False,
     narration: str | None = None,
     music_path: str | None = None,
+    template_config: TemplateConfig | None = None,
 ):
     """
-    High-retention Shorts assembler:
-    - Center-crops every clip to 1080x1920 (9:16) when vertical, else 1920x1080
-    - Cuts every 1.5–2.5s with a 1.1x zoom/pan reset
-    - Burns 1–3 word kinetic captions in the middle-third safe zone
-    - Wraps the last frames into the first for a seamless Shorts loop
-    - Mixes Piper TTS over music at -20 dB (~15% linear)
-    """
-    os.makedirs(work_dir, exist_ok=True)
-    if not clip_paths:
-        raise ValueError("No clips provided to assemble_video")
-    if not os.path.isfile(voiceover_path):
-        raise FileNotFoundError(f"Voiceover not found: {voiceover_path}")
+    High-retention Shorts assembler driven by a TemplateConfig:
 
-    voice_duration = min(_get_duration(voiceover_path), MAX_SHORTS_SECONDS)
+    - Center-crops every clip to 1080x1920 (9:16) when vertical, else 1920x1080
+    - Cuts on the template's varied pacing with a 1.1x zoom/pan reset
+    - Joins scenes with the template's cycled transition palette
+    - Burns 1-3 word karaoke captions in the template's caption style,
+      CENTERED on screen
+    - Wraps the last frames into the first for a seamless Shorts loop
+    - Mixes narration (template voice_gain) over music (template music_volume)
+
+    template_config=None falls back to DEFAULT_TEMPLATE, which mirrors the
+    previously-tuned neutral look -- existing callers change nothing.
+    """
+    config = template_config or DEFAULT_TEMPLATE
+    os.makedirs(work_dir, exist_ok=True)
+
+    # ---- 1. Validate everything BEFORE spending render time ----------------
+    voice_duration = _validate_inputs(clip_paths, voiceover_path)
+    log(f"Voiceover OK: {voice_duration:.2f}s, audio stream present.")
+
+    if music_path and not os.path.isfile(music_path):
+        log(f"Music path does not exist ({music_path}) -- continuing without music.")
+        music_path = None
+    if music_path is None:
+        music_path = find_music_track()
+    if config.music_volume <= 0:
+        if music_path:
+            log(f"Template '{config.name}' disables music -- ignoring {music_path}.")
+        music_path = None
+
     width, height = (SHORTS_WIDTH, SHORTS_HEIGHT) if vertical else (1920, 1080)
 
-    slot_durations = _plan_slots(voice_duration, len(clip_paths))
+    # ---- 2. Scene plan + PARALLEL renders -----------------------------------
+    slot_durations = _plan_slots(voice_duration, config)
     n_slots = len(slot_durations)
+    log(f"Plan: {n_slots} scenes, template='{config.name}', "
+        f"transitions={config.transitions[:3]}{'...' if len(config.transitions) > 3 else ''}, "
+        f"captions={config.caption_style}.")
 
     segment_jobs = [
         (
@@ -350,6 +441,8 @@ def assemble_video(
         for slot in range(n_slots)
     ]
 
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     segment_paths: list[str | None] = [None] * n_slots
     workers = min(4, os.cpu_count() or 2, n_slots)
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -358,60 +451,71 @@ def assemble_video(
             slot_index, seg_path = future.result()
             segment_paths[slot_index] = seg_path
 
+    # ---- 3. Merge with the template's varied transitions --------------------
     concat_video_path = os.path.join(work_dir, "concat_video.mp4")
-    _concat_with_xfade([p for p in segment_paths if p], slot_durations, concat_video_path, voice_duration)
+    _concat_with_xfade(
+        [p for p in segment_paths if p], slot_durations, concat_video_path,
+        voice_duration, config,
+    )
 
+    # ---- 4. Seamless loop (best effort) --------------------------------------
     looped_video_path = os.path.join(work_dir, "looped_video.mp4")
     try:
         _make_seamless_loop(concat_video_path, looped_video_path, voice_duration)
         picture_path = looped_video_path
-    except subprocess.CalledProcessError:
-        print("[assemble_video] seamless loop pass failed — using linear cut.")
+    except RuntimeError as exc:
+        log(f"Seamless loop pass failed ({exc}) -- using linear cut.")
         picture_path = concat_video_path
 
+    # ---- 5. Overlays: template color grade + centered title + karaoke captions
     vf_parts: list[str] = []
+    if config.eq:
+        vf_parts.append(config.eq)  # grade the PICTURE; captions burn on after
+
     if os.path.isfile(FONT_PATH):
         title_file = _write_caption_file(title_text, os.path.join(work_dir, "title.txt"))
         vf_parts.append(
             f"drawtext=fontfile='{_escape_ffmpeg_path(FONT_PATH)}':"
             f"textfile='{_escape_ffmpeg_path(title_file)}':"
-            f"fontcolor=white:fontsize={TITLE_FONT_SIZE}:"
+            "fontcolor=white:fontsize={}:"
             "borderw=6:bordercolor=black@0.95:"
             "x=(w-text_w)/2:y=h*0.12:"
-            "enable='between(t,0,3)'"
+            "enable='between(t,0,3)'".format(TITLE_FONT_SIZE)
         )
 
     if narration:
         chunks = _chunk_narration_for_captions(narration)
-        remaining = max(voice_duration, 0.01)
         total_words = sum(c["word_count"] for c in chunks) or 1
         if chunks:
-            seconds_per_word = remaining / total_words
+            seconds_per_word = voice_duration / total_words
             ass_path = os.path.join(work_dir, "captions.ass")
-            _build_karaoke_ass(chunks, 0.0, seconds_per_word, width, height, ass_path)
+            _build_karaoke_ass(
+                chunks, 0.0, seconds_per_word, width, height, ass_path,
+                style_key=config.caption_style,
+            )
             fonts_arg = f":fontsdir={_escape_ffmpeg_path(FONTS_DIR)}" if os.path.isdir(FONTS_DIR) else ""
             vf_parts.append(f"subtitles={_escape_ffmpeg_path(ass_path)}{fonts_arg}")
 
+    # ---- 6. Audio graph: voice (gain + fades) over music (template level) ----
     fade = min(LOOP_XFADE, max(voice_duration * 0.08, 0.15))
+    voice_gain = max(0.2, min(3.0, config.voice_gain))
     voice_af = (
+        f"volume={voice_gain:.2f},"
         f"afade=t=in:d={VOICE_FADE_MS},afade=t=out:st={max(voice_duration - fade, 0):.3f}:d={fade:.3f}"
     )
 
-    cmd: list[str] = ["ffmpeg", "-y", "-i", picture_path, "-i", voiceover_path]
-    filter_complex: str
-
-    if music_path and os.path.isfile(music_path):
+    cmd: list[str] = ["-i", picture_path, "-i", voiceover_path]
+    if music_path:
         cmd += ["-stream_loop", "-1", "-i", music_path]
         filter_complex = (
             f"[1:a]{voice_af},aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[voice];"
-            f"[2:a]volume={MUSIC_VOLUME_DB}dB,"
+            f"[2:a]volume={_linear_to_db(config.music_volume):.1f}dB,"
             f"aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[music];"
             f"[voice][music]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[mix];"
             f"[mix]asplit=2[abody][ahead];"
             f"[ahead]atrim=0:{fade:.3f},asetpts=PTS-STARTPTS[ah];"
             f"[abody][ah]acrossfade=d={fade:.3f}:c1=tri:c2=tri[aout]"
         )
-        map_audio = "[aout]"
     else:
         filter_complex = (
             f"[1:a]{voice_af},aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[mix];"
@@ -419,14 +523,14 @@ def assemble_video(
             f"[ahead]atrim=0:{fade:.3f},asetpts=PTS-STARTPTS[ah];"
             f"[abody][ah]acrossfade=d={fade:.3f}:c1=tri:c2=tri[aout]"
         )
-        map_audio = "[aout]"
 
     cmd += ["-filter_complex", filter_complex]
     if vf_parts:
         cmd += ["-vf", ",".join(vf_parts)]
     cmd += [
-        "-map", "0:v:0", "-map", map_audio,
-        "-c:v", "libx264", "-preset", "medium", "-pix_fmt", "yuv420p", "-threads", "0",
+        "-map", "0:v:0", "-map", "[aout]",
+        *video_encode_args(),
+        "-threads", "0",
         "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
         "-t", f"{voice_duration:.3f}",
         "-movflags", "+faststart",
@@ -434,37 +538,54 @@ def assemble_video(
     ]
 
     try:
-        _run_ffmpeg(cmd)
-    except subprocess.CalledProcessError:
+        run_ffmpeg(cmd, desc="final assembly")
+    except RuntimeError:
         # acrossfade can fail on very short VO; mux a simpler mix.
-        print("[assemble_video] looped audio mix failed — falling back to linear mix.")
-        fallback = ["ffmpeg", "-y", "-i", picture_path, "-i", voiceover_path]
-        if music_path and os.path.isfile(music_path):
+        log("Looped audio mix failed -- falling back to linear mix.")
+        fallback = ["-i", picture_path, "-i", voiceover_path]
+        if music_path:
             fallback += ["-stream_loop", "-1", "-i", music_path]
             fallback += [
                 "-filter_complex",
                 (
                     f"[1:a]{voice_af}[voice];"
-                    f"[2:a]volume={MUSIC_VOLUME_DB}dB[music];"
+                    f"[2:a]volume={_linear_to_db(config.music_volume):.1f}dB[music];"
                     "[voice][music]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
                 ),
             ]
-            if vf_parts:
-                fallback += ["-vf", ",".join(vf_parts)]
-            fallback += ["-map", "0:v:0", "-map", "[aout]"]
         else:
-            if vf_parts:
-                fallback += ["-vf", ",".join(vf_parts)]
-            fallback += ["-map", "0:v:0", "-map", "1:a:0"]
+            fallback += [
+                "-filter_complex",
+                f"[1:a]volume={voice_gain:.2f}[aout]",
+            ]
+        if vf_parts:
+            fallback += ["-vf", ",".join(vf_parts)]
         fallback += [
-            "-c:v", "libx264", "-preset", "medium", "-pix_fmt", "yuv420p", "-threads", "0",
+            "-map", "0:v:0", "-map", "[aout]",
+            *video_encode_args(),
+            "-threads", "0",
             "-c:a", "aac", "-b:a", "192k",
             "-t", f"{voice_duration:.3f}",
             "-movflags", "+faststart",
             out_path,
         ]
-        _run_ffmpeg(fallback)
+        run_ffmpeg(fallback, desc="fallback assembly")
 
+    # ---- 7. POST-MUX VERIFICATION (never ship a mute/broken file) ------------
+    if not has_audio_stream(out_path):
+        raise RuntimeError(
+            f"Assembled output '{out_path}' has NO audio stream after muxing. "
+            "This would upload as a silent Short -- failing the run instead. "
+            "Check the voiceover file and the ffmpeg audio filters above."
+        )
+    out_duration = media_duration(out_path)
+    if abs(out_duration - voice_duration) > 1.5:
+        log(f"WARNING: output duration {out_duration:.2f}s differs from voiceover "
+            f"{voice_duration:.2f}s by more than 1.5s.")
+
+    mix_note = f"voice+music (vol {config.music_volume})" if music_path else "voice only"
+    log(f"Assembly complete: {out_path} ({out_duration:.2f}s, audio: {mix_note}, "
+        f"template '{config.name}', captions centered).")
     return out_path
 
 

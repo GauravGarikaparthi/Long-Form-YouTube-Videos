@@ -1,397 +1,267 @@
 """
-Viral 2026 YouTube Shorts Templates Module.
-Implements trending template styles including:
-- High-emotion transitions (Loco, 2016 vs 2026, Seedance morphing)
-- Nostalgic montages with Polaroid styling
-- High-retention visual hooks and caption styles
-- Before/After transformation effects
-- Ranking system templates
+The 10 viral Short templates for 2026 + automatic topic-based selection.
+
+Each template bundles every creative knob the assembler needs:
+  - clip_seconds:        target scene length (shorter = higher energy)
+  - transition_duration: xfade overlap length between scenes
+  - transitions:         palette of xfade effects cycled per junction
+  - caption_style:       key into viral_captions.CAPTION_STYLES
+  - music_volume:        background music gain (voiceover stays dominant)
+  - voice_gain:          voiceover gain before loudness normalization
+  - eq:                  color-grade fragment applied to the final video
+
+select_template() scores the topic against each template's keyword list and
+picks the best match; ties break on score then definition order. No match ->
+DEFAULT_TEMPLATE (a balanced, safe look), so auto-selection can never crash
+the pipeline over an unusual topic.
 """
 
 from __future__ import annotations
 
-import random
-from enum import Enum
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+LOG_PREFIX = "[templates]"
 
 
-class ViralTemplateType(Enum):
-    """2026 Trending viral template categories."""
-    LOCO = "loco"  # High-energy, fast transitions (2.2M+ uses)
-    NOSTALGIC_MORPH = "nostalgic_morph"  # 2016 vs 2026 personal evolution
-    RANKING = "ranking"  # Ranked list with progression
-    BEFORE_AFTER = "before_after"  # Transformation/satisfaction videos
-    POV_TRAVELING = "pov_traveling"  # POV travel/lifestyle content
-    BEAT_SYNC = "beat_sync"  # Slow zoom synced to music beats
-    GRUNGE_BOLD = "grunge_bold"  # Black/Cyan dynamic grunge aesthetic
-    MOTIVATIONAL_TYPOGRAPHIC = "motivational_typographic"  # Bold red/black/yellow text
-    BTS = "bts"  # Behind-the-scenes intimate process videos
-    EVERYDAY_HACKS = "everyday_hacks"  # Fast-paced informational Q&A
+def log(message: str) -> None:
+    print(f"{LOG_PREFIX} {message}", flush=True)
 
 
-class CaptionStyle(Enum):
-    """2026 trending caption styles for high retention."""
-    KINETIC_BOLD = "kinetic_bold"  # Bold yellow/white with karaoke effect
-    YELLOW_BLACK_OUTLINE = "yellow_black_outline"  # High contrast, thick outline
-    GRADIENT_NEON = "gradient_neon"  # Neon pink/cyan gradient
-    SOFT_SHADOW = "soft_shadow"  # White with soft black shadow
-    BOLD_RED = "bold_red"  # High-impact red text
-    GLOWING_EDGE = "glowing_edge"  # Glow effect around edges
-
-
-class TransitionType(Enum):
-    """High-emotion transition effects."""
-    FADE = "fade"
-    SLIDE_LEFT = "slideleft"
-    SLIDE_RIGHT = "slideright"
-    ZOOM_IN = "zoomin"
-    ZOOM_OUT = "zoomout"
-    BLUR_HORIZONTAL = "hblur"
-    WIPE_RIGHT = "wiperight"
-    WIPE_LEFT = "wipeleft"
-    MORPH = "xfade"  # For nostalgic morphing effects
-
-
-@dataclass
+@dataclass(frozen=True)
 class TemplateConfig:
-    """Configuration for a specific viral template."""
-    template_type: ViralTemplateType
-    caption_style: CaptionStyle
-    transition_type: TransitionType
-    clip_duration_ms: float  # Duration per clip in milliseconds
-    transition_duration_ms: float  # Cross-fade duration
-    enable_zoom_pan: bool  # Enable Ken-Burns zoom effect
-    enable_music_beat_sync: bool  # Sync visual cuts to music beats
-    enable_polaroid_style: bool  # Nostalgic Polaroid frame overlay
-    max_clips: int  # Maximum number of clips to use
-    color_grade: str  # "warm" | "cool" | "vibrant" | "desaturated"
-    audio_emphasis: str  # "voice_forward" | "music_forward" | "balanced"
+    name: str
+    description: str
+    clip_seconds: float
+    transitions: tuple[str, ...] = ("fade",)
+    transition_duration: float = 0.18
+    caption_style: str = "KINETIC_BOLD"
+    music_volume: float = 0.10
+    voice_gain: float = 1.0
+    eq: str = ""
+    keywords: tuple[str, ...] = field(default_factory=tuple)
+    # Explicit scene-length pool (seconds). When set, the assembler cycles
+    # these varied durations instead of deriving a pool from clip_seconds --
+    # varied cut lengths read as more organic than metronome-regular cuts.
+    clip_durations: tuple[float, ...] | None = None
 
 
-# PRESET TEMPLATE CONFIGURATIONS FOR 2026 TRENDING STYLES
+# ---------------------------------------------------------------------------
+# The 2026 template set
+# ---------------------------------------------------------------------------
 
-LOCO_CONFIG = TemplateConfig(
-    template_type=ViralTemplateType.LOCO,
-    caption_style=CaptionStyle.KINETIC_BOLD,
-    transition_type=TransitionType.SLIDE_LEFT,
-    clip_duration_ms=1400,  # Fast cuts
-    transition_duration_ms=200,
-    enable_zoom_pan=True,
-    enable_music_beat_sync=True,
-    enable_polaroid_style=False,
-    max_clips=12,
-    color_grade="vibrant",
-    audio_emphasis="music_forward"
-)
-
-NOSTALGIC_MORPH_CONFIG = TemplateConfig(
-    template_type=ViralTemplateType.NOSTALGIC_MORPH,
-    caption_style=CaptionStyle.SOFT_SHADOW,
-    transition_type=TransitionType.MORPH,
-    clip_duration_ms=2500,  # Slower for emotional beats
-    transition_duration_ms=800,  # Extended morphing
-    enable_zoom_pan=False,
-    enable_music_beat_sync=False,
-    enable_polaroid_style=True,
-    max_clips=6,
-    color_grade="warm",
-    audio_emphasis="voice_forward"
-)
-
-RANKING_CONFIG = TemplateConfig(
-    template_type=ViralTemplateType.RANKING,
-    caption_style=CaptionStyle.BOLD_RED,
-    transition_type=TransitionType.SLIDE_RIGHT,
-    clip_duration_ms=1800,
-    transition_duration_ms=150,
-    enable_zoom_pan=True,
-    enable_music_beat_sync=True,
-    enable_polaroid_style=False,
-    max_clips=8,
-    color_grade="vibrant",
-    audio_emphasis="balanced"
-)
-
-BEFORE_AFTER_CONFIG = TemplateConfig(
-    template_type=ViralTemplateType.BEFORE_AFTER,
-    caption_style=CaptionStyle.YELLOW_BLACK_OUTLINE,
-    transition_type=TransitionType.FADE,
-    clip_duration_ms=2000,
-    transition_duration_ms=300,
-    enable_zoom_pan=False,
-    enable_music_beat_sync=False,
-    enable_polaroid_style=False,
-    max_clips=4,
-    color_grade="vibrant",
-    audio_emphasis="voice_forward"
-)
-
-POV_TRAVELING_CONFIG = TemplateConfig(
-    template_type=ViralTemplateType.POV_TRAVELING,
-    caption_style=CaptionStyle.SOFT_SHADOW,
-    transition_type=TransitionType.SLIDE_LEFT,
-    clip_duration_ms=1600,
-    transition_duration_ms=180,
-    enable_zoom_pan=True,
-    enable_music_beat_sync=True,
-    enable_polaroid_style=False,
-    max_clips=10,
-    color_grade="cool",
-    audio_emphasis="music_forward"
-)
-
-BEAT_SYNC_CONFIG = TemplateConfig(
-    template_type=ViralTemplateType.BEAT_SYNC,
-    caption_style=CaptionStyle.KINETIC_BOLD,
-    transition_type=TransitionType.ZOOM_IN,
-    clip_duration_ms=2200,  # Longer, synced to beats
-    transition_duration_ms=250,
-    enable_zoom_pan=True,
-    enable_music_beat_sync=True,
-    enable_polaroid_style=False,
-    max_clips=8,
-    color_grade="vibrant",
-    audio_emphasis="music_forward"
-)
-
-GRUNGE_BOLD_CONFIG = TemplateConfig(
-    template_type=ViralTemplateType.GRUNGE_BOLD,
-    caption_style=CaptionStyle.GRADIENT_NEON,
-    transition_type=TransitionType.WIPE_RIGHT,
-    clip_duration_ms=1500,
-    transition_duration_ms=200,
-    enable_zoom_pan=True,
-    enable_music_beat_sync=True,
-    enable_polaroid_style=False,
-    max_clips=10,
-    color_grade="desaturated",  # Black/Cyan aesthetic
-    audio_emphasis="music_forward"
-)
-
-MOTIVATIONAL_TYPOGRAPHIC_CONFIG = TemplateConfig(
-    template_type=ViralTemplateType.MOTIVATIONAL_TYPOGRAPHIC,
-    caption_style=CaptionStyle.BOLD_RED,
-    transition_type=TransitionType.FADE,
-    clip_duration_ms=1900,
-    transition_duration_ms=180,
-    enable_zoom_pan=True,
-    enable_music_beat_sync=True,
-    enable_polaroid_style=False,
-    max_clips=8,
-    color_grade="vibrant",
-    audio_emphasis="music_forward"
-)
-
-BTS_CONFIG = TemplateConfig(
-    template_type=ViralTemplateType.BTS,
-    caption_style=CaptionStyle.SOFT_SHADOW,
-    transition_type=TransitionType.FADE,
-    clip_duration_ms=2400,  # Longer, intimate pace
-    transition_duration_ms=200,
-    enable_zoom_pan=False,
-    enable_music_beat_sync=False,
-    enable_polaroid_style=False,
-    max_clips=6,
-    color_grade="warm",
-    audio_emphasis="voice_forward"
-)
-
-EVERYDAY_HACKS_CONFIG = TemplateConfig(
-    template_type=ViralTemplateType.EVERYDAY_HACKS,
-    caption_style=CaptionStyle.YELLOW_BLACK_OUTLINE,
-    transition_type=TransitionType.SLIDE_LEFT,
-    clip_duration_ms=1300,  # Fast for rapid Q&A
-    transition_duration_ms=150,
-    enable_zoom_pan=True,
-    enable_music_beat_sync=True,
-    enable_polaroid_style=False,
-    max_clips=10,
-    color_grade="vibrant",
-    audio_emphasis="balanced"
-)
-
-
-# Template registry
-TEMPLATE_CONFIGS = {
-    ViralTemplateType.LOCO: LOCO_CONFIG,
-    ViralTemplateType.NOSTALGIC_MORPH: NOSTALGIC_MORPH_CONFIG,
-    ViralTemplateType.RANKING: RANKING_CONFIG,
-    ViralTemplateType.BEFORE_AFTER: BEFORE_AFTER_CONFIG,
-    ViralTemplateType.POV_TRAVELING: POV_TRAVELING_CONFIG,
-    ViralTemplateType.BEAT_SYNC: BEAT_SYNC_CONFIG,
-    ViralTemplateType.GRUNGE_BOLD: GRUNGE_BOLD_CONFIG,
-    ViralTemplateType.MOTIVATIONAL_TYPOGRAPHIC: MOTIVATIONAL_TYPOGRAPHIC_CONFIG,
-    ViralTemplateType.BTS: BTS_CONFIG,
-    ViralTemplateType.EVERYDAY_HACKS: EVERYDAY_HACKS_CONFIG,
+TEMPLATES: dict[str, TemplateConfig] = {
+    t.name: t
+    for t in [
+        TemplateConfig(
+            name="LOCO",
+            description="Ultra-fast music-edit energy (CapCut 'Loco' trend).",
+            clip_seconds=1.4,
+            transitions=("slideleft", "slideup", "fade", "slideright"),
+            transition_duration=0.25,
+            caption_style="KINETIC_BOLD",
+            music_volume=0.24,
+            eq="eq=saturation=1.25:contrast=1.08:brightness=0.02",
+            keywords=(
+                "loco", "dance", "party", "music", "edit", "hype", "trend",
+                "viral dance", "beat drop",
+            ),
+        ),
+        TemplateConfig(
+            name="NOSTALGIC_MORPH",
+            description="Then-vs-now evolution morphs with warm nostalgic grade.",
+            clip_seconds=2.5,
+            transitions=("dissolve", "fadeblack", "hblur", "fade"),
+            transition_duration=0.5,
+            caption_style="SOFT_SHADOW",
+            music_volume=0.16,
+            eq="eq=saturation=0.92:contrast=0.98:gamma_r=1.04:gamma_b=0.96",
+            keywords=(
+                "nostalgia", "2016", "evolution", "then vs now", "childhood",
+                "memory", "throwback", "years ago", "history", "decade",
+                "used to", "growing up",
+            ),
+        ),
+        TemplateConfig(
+            name="RANKING",
+            description="Top-list / tier-list countdown format.",
+            clip_seconds=1.8,
+            transitions=("wipeup", "slideleft", "circleopen", "wipedown"),
+            transition_duration=0.3,
+            caption_style="YELLOW_BLACK",
+            music_volume=0.20,
+            eq="eq=saturation=1.12:contrast=1.06",
+            keywords=(
+                "ranking", "ranked", "top", "best", "worst", "tier list",
+                "countdown", "list", "number one", "top 5", "top 10",
+            ),
+        ),
+        TemplateConfig(
+            name="BEFORE_AFTER",
+            description="Satisfying transformation reveals.",
+            clip_seconds=2.0,
+            transitions=("fadewhite", "circleopen", "dissolve", "radial"),
+            transition_duration=0.4,
+            caption_style="BOLD_RED",
+            music_volume=0.15,
+            eq="eq=saturation=1.15:contrast=1.10",
+            keywords=(
+                "before", "after", "transformation", "glow up", "makeover",
+                "renovation", "cleaning", "upgrade", "reveal", "progress",
+            ),
+        ),
+        TemplateConfig(
+            name="POV_TRAVELING",
+            description="First-person travel/lifestyle flow.",
+            clip_seconds=1.6,
+            transitions=("smoothleft", "slideup", "fade", "smoothright"),
+            transition_duration=0.3,
+            caption_style="SOFT_SHADOW",
+            music_volume=0.20,
+            eq="eq=saturation=1.18:brightness=0.02",
+            keywords=(
+                "travel", "pov", "city", "beach", "trip", "wanderlust",
+                "flight", "hotel", "island", "mountain", "adventure",
+                "destination", "tourist",
+            ),
+        ),
+        TemplateConfig(
+            name="BEAT_SYNC",
+            description="Music-forward cut rhythm for bass-heavy tracks.",
+            clip_seconds=2.2,
+            transitions=("fade", "fadeblack", "dissolve"),
+            transition_duration=0.15,
+            caption_style="KINETIC_BOLD",
+            music_volume=0.30,
+            eq="eq=saturation=1.20:contrast=1.08",
+            keywords=(
+                "beat", "sync", "bass", "edm", "phonk", "rhythm", "drop",
+                "remix", "song", "audio",
+            ),
+        ),
+        TemplateConfig(
+            name="GRUNGE_BOLD",
+            description="High-contrast grunge look for gaming/fashion edits.",
+            clip_seconds=1.5,
+            transitions=("pixelize", "distance", "hlslice", "squeezev"),
+            transition_duration=0.25,
+            caption_style="GLOWING_EDGE",
+            music_volume=0.25,
+            eq="eq=contrast=1.22:saturation=0.90:gamma=0.96",
+            keywords=(
+                "grunge", "gaming", "game", "fashion", "streetwear", "skate",
+                "punk", "dark aesthetic", "cyber", "neon", "esports",
+            ),
+        ),
+        TemplateConfig(
+            name="MOTIVATIONAL_TYPOGRAPHIC",
+            description="Bold typographic growth/mindset content.",
+            clip_seconds=1.9,
+            transitions=("fade", "circleopen", "smoothup", "fadewhite"),
+            transition_duration=0.35,
+            caption_style="BOLD_RED",
+            music_volume=0.18,
+            eq="eq=contrast=1.12:saturation=1.05",
+            keywords=(
+                "motivate", "motivation", "motivational", "discipline",
+                "mindset", "grind", "success", "gym", "self improvement",
+                "habit", "goal", "productivity", "focus",
+            ),
+        ),
+        TemplateConfig(
+            name="BTS",
+            description="Behind-the-scenes process footage feel.",
+            clip_seconds=2.4,
+            transitions=("dissolve", "fade", "smoothleft", "fadeblack"),
+            transition_duration=0.45,
+            caption_style="YELLOW_BLACK",
+            music_volume=0.14,
+            eq="eq=saturation=1.02:contrast=1.02",
+            keywords=(
+                "behind the scenes", "studio", "session", "songwriting",
+                "process", "making of", "bts", "recording", "rehearsal",
+                "workshop", "backstage",
+            ),
+        ),
+        TemplateConfig(
+            name="EVERYDAY_HACKS",
+            description="Rapid-fire tips & quick tutorials.",
+            clip_seconds=1.3,
+            transitions=("slideleft", "wipeup", "circleclose", "slideup"),
+            transition_duration=0.2,
+            caption_style="KINETIC_BOLD",
+            music_volume=0.20,
+            eq="eq=saturation=1.15:contrast=1.07:brightness=0.03",
+            keywords=(
+                "hack", "hacks", "tip", "tips", "tutorial", "how to",
+                "diy", "trick", "lifehack", "quick", "easy way", "guide",
+            ),
+        ),
+    ]
 }
 
+# Safe fallback used when nothing matches or a config is invalid. Mirrors the
+# assembler's previously-tuned neutral look (varied 1.5-2.5s cuts, short
+# crossfades, quiet music bed) so passing no template changes nothing.
+DEFAULT_TEMPLATE = TemplateConfig(
+    name="BALANCED",
+    description="Balanced default pacing/look when no template matches.",
+    clip_seconds=2.0,
+    transitions=("fade", "slideleft", "hblur", "slideright", "wiperight", "wipeleft"),
+    transition_duration=0.18,
+    caption_style="KINETIC_BOLD",
+    music_volume=0.10,
+    voice_gain=1.0,
+    eq="",
+    clip_durations=(1.6, 2.1, 1.8, 2.4, 1.5, 2.5, 1.9, 2.2),
+)
 
-def get_template_config(template_type: ViralTemplateType) -> TemplateConfig:
-    """Retrieve configuration for a specific template type."""
-    return TEMPLATE_CONFIGS[template_type]
 
-
-def select_best_template(
-    topic: str,
-    content_category: str | None = None,
-) -> tuple[ViralTemplateType, TemplateConfig]:
+def select_template(topic: str) -> TemplateConfig:
     """
-    Intelligently select the best-performing template for a given topic.
-    
-    Args:
-        topic: The video topic/subject
-        content_category: Optional category (e.g., "lifestyle", "educational", "entertainment")
-    
-    Returns:
-        Tuple of (template_type, config)
+    Keyword-scored auto-selection. Counts how many of each template's
+    keywords appear in the topic string; highest count wins, ties break by
+    definition order (earlier in TEMPLATES = more specific intent).
     """
-    topic_lower = topic.lower()
-    
-    # Content-specific template recommendations
-    category_templates = {
-        "lifestyle": [ViralTemplateType.POV_TRAVELING, ViralTemplateType.BTS],
-        "education": [ViralTemplateType.EVERYDAY_HACKS, ViralTemplateType.MOTIVATIONAL_TYPOGRAPHIC],
-        "entertainment": [ViralTemplateType.LOCO, ViralTemplateType.RANKING],
-        "transformation": [ViralTemplateType.BEFORE_AFTER, ViralTemplateType.NOSTALGIC_MORPH],
-        "process": [ViralTemplateType.BTS, ViralTemplateType.EVERYDAY_HACKS],
-        "ranking": [ViralTemplateType.RANKING, ViralTemplateType.MOTIVATIONAL_TYPOGRAPHIC],
-        "travel": [ViralTemplateType.POV_TRAVELING, ViralTemplateType.LOCO],
-        "music": [ViralTemplateType.BEAT_SYNC, ViralTemplateType.LOCO],
-        "aesthetic": [ViralTemplateType.GRUNGE_BOLD, ViralTemplateType.NOSTALGIC_MORPH],
-    }
-    
-    # Topic keyword-based fallback
-    keyword_templates = {
-        "before": ViralTemplateType.BEFORE_AFTER,
-        "after": ViralTemplateType.BEFORE_AFTER,
-        "transformation": ViralTemplateType.BEFORE_AFTER,
-        "ranking": ViralTemplateType.RANKING,
-        "top": ViralTemplateType.RANKING,
-        "best": ViralTemplateType.RANKING,
-        "worst": ViralTemplateType.RANKING,
-        "2016": ViralTemplateType.NOSTALGIC_MORPH,
-        "2026": ViralTemplateType.NOSTALGIC_MORPH,
-        "evolution": ViralTemplateType.NOSTALGIC_MORPH,
-        "journey": ViralTemplateType.NOSTALGIC_MORPH,
-        "hack": ViralTemplateType.EVERYDAY_HACKS,
-        "tip": ViralTemplateType.EVERYDAY_HACKS,
-        "tutorial": ViralTemplateType.EVERYDAY_HACKS,
-        "behind": ViralTemplateType.BTS,
-        "scenes": ViralTemplateType.BTS,
-        "process": ViralTemplateType.BTS,
-        "travel": ViralTemplateType.POV_TRAVELING,
-        "vlog": ViralTemplateType.POV_TRAVELING,
-    }
-    
-    # Try category-based selection
-    if content_category:
-        category_lower = content_category.lower()
-        if category_lower in category_templates:
-            selected = random.choice(category_templates[category_lower])
-            return selected, get_template_config(selected)
-    
-    # Try keyword matching
-    for keyword, template_type in keyword_templates.items():
-        if keyword in topic_lower:
-            return template_type, get_template_config(template_type)
-    
-    # Default to trending templates with weighted probability
-    trending_templates = [
-        (ViralTemplateType.LOCO, 0.25),  # Highest usage
-        (ViralTemplateType.BEAT_SYNC, 0.20),
-        (ViralTemplateType.POV_TRAVELING, 0.15),
-        (ViralTemplateType.RANKING, 0.15),
-        (ViralTemplateType.NOSTALGIC_MORPH, 0.10),
-        (ViralTemplateType.EVERYDAY_HACKS, 0.10),
-        (ViralTemplateType.GRUNGE_BOLD, 0.05),
-    ]
-    
-    selected = random.choices(
-        [t for t, _ in trending_templates],
-        weights=[w for _, w in trending_templates],
-        k=1
-    )[0]
-    
-    return selected, get_template_config(selected)
+    topic_lower = (topic or "").lower()
+    if not topic_lower.strip():
+        log("Empty topic -- using DEFAULT_TEMPLATE.")
+        return DEFAULT_TEMPLATE
+
+    best_name: str | None = None
+    best_score = 0
+    scores: dict[str, int] = {}
+
+    for name, template in TEMPLATES.items():
+        score = sum(1 for kw in template.keywords if kw in topic_lower)
+        scores[name] = score
+        if score > best_score:
+            best_score = score
+            best_name = name
+
+    if best_name is None or best_score == 0:
+        log(f"No keyword match for topic '{topic}' -- using DEFAULT_TEMPLATE.")
+        return DEFAULT_TEMPLATE
+
+    chosen = TEMPLATES[best_name]
+    matched = [kw for kw in chosen.keywords if kw in topic_lower]
+    log(f"Auto-selected template '{chosen.name}' for topic '{topic}' "
+        f"(matched keywords: {matched[:4]}).")
+    return chosen
 
 
-def describe_template(template_type: ViralTemplateType) -> dict:
-    """Return human-readable description of a template."""
-    descriptions = {
-        ViralTemplateType.LOCO: {
-            "name": "LOCO (2.2M+ uses)",
-            "description": "High-energy viral trend with fast cuts and dynamic transitions.",
-            "best_for": "Entertainment, music, high-energy content",
-            "retention_hook": "Rapid pacing and constant visual movement",
-        },
-        ViralTemplateType.NOSTALGIC_MORPH: {
-            "name": "2016 vs 2026 Morph",
-            "description": "Personal evolution with emotional morphing transitions.",
-            "best_for": "Personal development, transformation, nostalgia",
-            "retention_hook": "Emotional connection and transformation narrative",
-        },
-        ViralTemplateType.RANKING: {
-            "name": "Ranking System",
-            "description": "Structured list with progression and tension building.",
-            "best_for": "Top lists, comparisons, educational ranking content",
-            "retention_hook": "Curiosity loop and progressive reveals",
-        },
-        ViralTemplateType.BEFORE_AFTER: {
-            "name": "Before & After",
-            "description": "Satisfying transformation with visual contrast.",
-            "best_for": "Transformations, cleaning, makeovers, results",
-            "retention_hook": "Satisfaction and visual transformation proof",
-        },
-        ViralTemplateType.POV_TRAVELING: {
-            "name": "POV Traveling",
-            "description": "First-person perspective travel/lifestyle content.",
-            "best_for": "Travel, lifestyle, daily vlogs, exploration",
-            "retention_hook": "Immersive perspective and discovery",
-        },
-        ViralTemplateType.BEAT_SYNC: {
-            "name": "Slow Zoom & Beat Sync",
-            "description": "Visual cuts synchronized to music beats.",
-            "best_for": "Music-heavy content, aesthetic, mood-driven",
-            "retention_hook": "Rhythmic visual-audio synchronization",
-        },
-        ViralTemplateType.GRUNGE_BOLD: {
-            "name": "Grunge & Bold Aesthetic",
-            "description": "High-energy design with black/cyan dynamic grunge.",
-            "best_for": "Fashion, gaming, bold advertising, music",
-            "retention_hook": "Visual edginess and modern aesthetic",
-        },
-        ViralTemplateType.MOTIVATIONAL_TYPOGRAPHIC: {
-            "name": "Motivational Typographic",
-            "description": "Bold red/black/yellow text with motivational messaging.",
-            "best_for": "Growth content, motivation, educational, self-improvement",
-            "retention_hook": "Powerful text combined with visual storytelling",
-        },
-        ViralTemplateType.BTS: {
-            "name": "Behind-the-Scenes",
-            "description": "Intimate process videos showing creation/workflow.",
-            "best_for": "Music production, creative process, studio sessions",
-            "retention_hook": "Insider perspective and authenticity",
-        },
-        ViralTemplateType.EVERYDAY_HACKS: {
-            "name": "Everyday Hacks & Q&A",
-            "description": "Fast-paced informational content with quick tips.",
-            "best_for": "Tips, hacks, quick solutions, educational rapid-fire",
-            "retention_hook": "Practical value and quick information delivery",
-        },
-    }
-    return descriptions.get(template_type, {})
+def get_template(name: str) -> TemplateConfig | None:
+    """Case-insensitive lookup by template name."""
+    return TEMPLATES.get((name or "").strip().upper())
+
+
+def list_templates() -> list[str]:
+    return list(TEMPLATES.keys())
 
 
 if __name__ == "__main__":
-    import json
-    
-    # Demo: Show all templates
-    for template_type in ViralTemplateType:
-        config = get_template_config(template_type)
-        desc = describe_template(template_type)
-        print(f"\n{desc['name']}")
-        print(f"  {desc['description']}")
-        print(f"  Best for: {desc['best_for']}")
-        print(f"  Clip duration: {config.clip_duration_ms}ms")
-        print(f"  Transition: {config.transition_type.value}")
-        print(f"  Music sync: {config.enable_music_beat_sync}")
+    # Self-check: selection sanity across representative topics.
+    assert select_template("top 5 space discoveries").name == "RANKING"
+    assert select_template("how to fold shirts fast").name == "EVERYDAY_HACKS"
+    assert select_template("my 2016 vs now glow up").name == "NOSTALGIC_MORPH"
+    assert select_template("quantum flux capacitor repair").name == DEFAULT_TEMPLATE.name
+    print(f"[templates] self-check OK ({len(TEMPLATES)} templates)")
