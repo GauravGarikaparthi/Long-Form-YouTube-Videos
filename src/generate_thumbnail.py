@@ -81,7 +81,7 @@ def _draw_text_with_stroke(
     draw.text(xy, text, font=font, fill=fill, stroke_width=stroke_width, stroke_fill=stroke)
 
 
-def generate_thumbnail(video_path: str, title_text: str, out_path: str, vertical: bool = False):
+def generate_thumbnail(video_path: str, title_text: str, out_path: str, _vertical: bool = False):
     """Always emit the official Shorts still size (1080x1920). `vertical` is kept for API compat."""
     width, height = SHORTS_WIDTH, SHORTS_HEIGHT
     frame_path = out_path.replace(".jpg", "_frame.jpg").replace(".png", "_frame.png")
