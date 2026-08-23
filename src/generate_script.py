@@ -1,16 +1,27 @@
 """
 Generates a short narration script + metadata (title, description, tags)
-for a faceless YouTube video based on a trending topic.
+for a faceless YouTube Short, with hard length and SEO guardrails.
 """
 
-import os
+from __future__ import annotations
+
 import json
+import os
+import re
+
 from groq import Groq
 
 from _sanitize import sanitize_credential
 from languages import DEFAULT_LANGUAGE, name_for_language
 
 MODEL = "openai/gpt-oss-120b"
+
+# ~150 wpm Piper/Kokoro speech. 50–55s => ~125–138 words. Hard-cap below 140.
+MIN_NARRATION_WORDS = 120
+MAX_NARRATION_WORDS = 135
+MAX_SPOKEN_SECONDS = 55
+MAX_TITLE_CHARS = 50
+SHORTS_TAG = "#shorts"
 
 
 def _language_instruction(language: str) -> str:
@@ -22,9 +33,11 @@ def _language_instruction(language: str) -> str:
     )
 
 
-SYSTEM_PROMPT = """You write scripts for short, faceless narration-style YouTube Shorts \
-(30-45 seconds spoken -- short and tight, not a full essay), and you are also an SEO \
+SYSTEM_PROMPT = """You write scripts for faceless YouTube Shorts and you are also an SEO \
 copywriter for YouTube.
+
+FORMAT: vertical Shorts only. Spoken length is 50-55 seconds — never longer. \
+That is a hard cap, not a target to pad toward.
 
 VOICE: Write like a sharp, friendly expert explaining this to a smart friend over coffee -- \
 conversational, a little witty, confident but never condescending. Anticipate the question \
@@ -33,8 +46,9 @@ do this?") and answer it directly in the next line, as if you read their mind. A
 corporate jargon and buzzwords entirely (no "leverage", "synergy", "unlock your potential", \
 "in today's fast-paced world") -- talk like a person, not a LinkedIn post.
 
-HOOK (first sentence, non-negotiable): open with ONE of these proven hook patterns, \
-whichever best fits the topic, delivered with a punchy, conversational edge:
+HOOK (first 3 seconds, non-negotiable): the FIRST SENTENCE is both the verbal AND visual \
+hook. It must be 6-10 words, speakable in under 3 seconds, and create high tension \
+(curiosity, stakes, or a pattern interrupt) before any context. Open with ONE of:
 - Bold/counterintuitive claim ("Most people get this backwards.")
 - Direct question that implies a knowledge gap ("Why do the top 1% do this every morning?")
 - Cold open fact/number ("93% of goals fail for one specific reason.")
@@ -42,22 +56,105 @@ whichever best fits the topic, delivered with a punchy, conversational edge:
 - Stakes-first ("If you don't fix this by 30, it gets 10x harder.")
 Never open with a slow throat-clear like "Have you ever wondered..." or "Let's talk about."
 
-STRUCTURE: hook -> 2-4 tight value/story beats that each earn the next line (cut anything \
-that isn't essential, using the "friendly expert" move of naming the question a viewer \
-would ask right before answering it) -> a clean ending that lands and ties back to the \
+STRUCTURE: 3-second hook -> 2-4 tight value/story beats that each earn the next line \
+(cut anything that isn't essential) -> a clean ending that lands and ties back to the \
 hook (a twist, a payoff, or a direct callback), never trailing off.
 
 SENTENCE LENGTH: keep sentences SHORT (roughly 4-9 words each), one idea per sentence. \
-This isn't just style -- narration is auto-split into on-screen caption chunks by sentence, \
-so short, self-contained sentences read as clean, well-timed captions instead of being \
-awkwardly chopped mid-thought.
+Narration is auto-split into 1-3 word on-screen caption chunks, so short sentences \
+caption cleanly.
 
-LENGTH CAPS (hard limits, do not exceed): narration must be 90-130 words total (30-45 \
-seconds spoken). description must be 3-5 sentences. tags must be 8-12 items. Stop as soon \
-as the JSON object is complete -- no trailing commentary, no repeated fields.
+LENGTH CAPS (hard limits, do not exceed):
+- narration: 120-135 words total (50-55 seconds spoken at ~150 wpm). Count the words. \
+  If you are over 135, cut beats until you are under.
+- title: under 50 characters INCLUDING the trailing " #shorts". Primary keyword is \
+  the FIRST words of the title, then the hook, then " #shorts".
+- description: first line is exactly "#shorts". Then 3-5 SEO sentences. Soft CTA to subscribe.
+- tags: 8-12 items, include "shorts".
 
 Clear simple sentences, no fluff, no stage directions, no headers - just spoken narration \
 text. Return ONLY valid JSON, no markdown fences, no preamble."""
+
+
+def _word_count(text: str) -> int:
+    return len(re.findall(r"\S+", text.strip()))
+
+
+def _trim_narration(narration: str) -> str:
+    """Hard-stop spoken length so Piper output stays inside 50–55s."""
+    words = re.findall(r"\S+", narration.strip())
+    if len(words) <= MAX_NARRATION_WORDS:
+        return narration.strip()
+    trimmed = words[:MAX_NARRATION_WORDS]
+    text = " ".join(trimmed)
+    if not re.search(r"[.!?]$", text):
+        text = re.sub(r"[,:;]+$", "", text) + "."
+    return text
+
+
+def _primary_keyword(topic: str, seo_keywords: list[str] | None) -> str:
+    if seo_keywords:
+        candidate = seo_keywords[0].strip()
+        if candidate:
+            return candidate
+    return topic.strip()
+
+
+def _format_title(raw: str, keyword: str) -> str:
+    """Keyword-first title, under 50 chars, with #shorts at the end."""
+    cleaned = re.sub(r"#shorts\b", "", raw or "", flags=re.IGNORECASE).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    keyword = re.sub(r"#shorts\b", "", keyword or "", flags=re.IGNORECASE).strip()
+
+    if keyword and not cleaned.lower().startswith(keyword.lower()):
+        cleaned = f"{keyword} {cleaned}".strip()
+
+    suffix = f" {SHORTS_TAG}"
+    budget = MAX_TITLE_CHARS - len(suffix)
+    if budget < 8:
+        return (keyword[: max(MAX_TITLE_CHARS - len(suffix), 1)] + suffix)[:MAX_TITLE_CHARS]
+
+    if len(cleaned) > budget:
+        cut = cleaned[:budget].rsplit(" ", 1)[0].rstrip("-–|,")
+        cleaned = cut if cut else cleaned[:budget]
+
+    title = f"{cleaned}{suffix}"
+    return title[:MAX_TITLE_CHARS]
+
+
+def _format_description(description: str) -> str:
+    body = (description or "").strip()
+    body = re.sub(r"^\s*#shorts\s*", "", body, flags=re.IGNORECASE)
+    return f"{SHORTS_TAG}\n{body}".strip()
+
+
+def _normalize_package(package: dict, topic: str, seo_keywords: list[str] | None) -> dict:
+    if not isinstance(package, dict):
+        raise RuntimeError("Groq returned JSON that is not an object.")
+
+    keyword = _primary_keyword(topic, seo_keywords)
+    narration = _trim_narration(str(package.get("narration") or ""))
+    if _word_count(narration) < 8:
+        raise RuntimeError("Generated narration is empty or too short to use.")
+
+    tags = package.get("tags") or []
+    if isinstance(tags, str):
+        tags = [t.strip() for t in tags.split(",") if t.strip()]
+    tags = [str(t).strip() for t in tags if str(t).strip()]
+    if "shorts" not in {t.lower() for t in tags}:
+        tags = ["shorts", *tags]
+    visual = package.get("visual_keywords") or []
+    if isinstance(visual, str):
+        visual = [visual]
+
+    return {
+        "title": _format_title(str(package.get("title") or topic), keyword),
+        "description": _format_description(str(package.get("description") or "")),
+        "tags": tags[:12],
+        "narration": narration,
+        "visual_keywords": [str(v).strip() for v in visual if str(v).strip()][:8],
+        "thumbnail_hook": " ".join(_format_title(str(package.get("title") or topic), keyword).split()[:3]),
+    }
 
 
 def generate_script(
@@ -69,16 +166,12 @@ def generate_script(
     """
     Returns a dict:
     {
-        "title": str,          # YouTube title
-        "description": str,    # YouTube description
+        "title": str,          # <=50 chars, keyword-first, includes #shorts
+        "description": str,    # first line is #shorts
         "tags": [str, ...],
-        "narration": str,      # full voiceover script
-        "visual_keywords": [str, ...]  # keywords to search stock footage for
+        "narration": str,      # full voiceover script, <=135 words
+        "visual_keywords": [str, ...]
     }
-
-    seo_keywords: real search phrases (e.g. from YouTube autocomplete / Google Trends
-    related queries) that the title/description/tags should be built around, instead of
-    guessing what people search for.
     """
     client = Groq(api_key=sanitize_credential(api_key or os.environ["GROQ_API_KEY"]))
 
@@ -93,11 +186,10 @@ phrasing hints, never as a replacement for the topic itself:
 {keyword_list}
 
 SEO requirements (all secondary to staying on-topic):
-- If one of these phrases fits the video's actual content naturally, work it into the
-  title early. If none of them genuinely fit -- e.g. they're only loosely related,
-  or the topic is niche enough that search data is thin -- ignore this list entirely
-  and write a plain, accurate, SEO-reasonable title from the topic alone. Do NOT bend
-  the video's subject to match a keyword.
+- The PRIMARY keyword (prefer the first phrase above if it fits) MUST be the first
+  words of the title. Then the hook. Then " #shorts". Total title under 50 characters.
+- If none of these phrases genuinely fit, use the topic itself as the primary keyword
+  at the start of the title. Do NOT bend the video's subject to match a keyword.
 - Same rule for the description and tags: use a phrase only where it's a natural,
   accurate fit for content actually in the narration
 - Do NOT keyword-stuff - it must still read naturally to a human"""
@@ -105,13 +197,16 @@ SEO requirements (all secondary to staying on-topic):
     user_prompt = f"""Topic (the video MUST be specifically about this -- do not drift to a \
 related but different subject, even if the SEO keywords below point elsewhere): {topic}{keyword_block}
 
-Create a faceless YouTube short-form video package on this exact topic. Respond with ONLY this JSON structure:
+Create a faceless YouTube Shorts package on this exact topic. Spoken narration MUST fit \
+in 50-55 seconds (120-135 words). The first sentence is the 3-second hook.
+
+Respond with ONLY this JSON structure:
 
 {{
-  "title": "catchy, SEO-optimized YouTube title, under 70 characters",
-  "description": "4-5 sentence SEO-optimized YouTube description, keyword-rich opening, soft call to action to subscribe at the end",
+  "title": "PRIMARY KEYWORD then hook, under 40 characters before #shorts",
+  "description": "#shorts as line 1, then 3-5 SEO sentences, subscribe CTA last",
   "tags": ["tag1", "tag2", "..."],
-  "narration": "the full 30-45 second spoken script, tight and punchy, first line is a scroll-stopping hook",
+  "narration": "120-135 word spoken script. Sentence 1 is a 6-10 word high-tension hook.",
   "visual_keywords": ["keyword1", "keyword2", "keyword3", "..."]
 }}{_language_instruction(language)}
 
@@ -135,20 +230,25 @@ castle" or "knights sword fight", not the show's name or any character name)."""
         ],
     )
 
-    text = response.choices[0].message.content.strip()
+    text = (response.choices[0].message.content or "").strip()
     if not text:
         raise RuntimeError(
             "Groq returned an empty response (likely truncated before completing valid "
             "JSON). Try increasing max_tokens further if this recurs."
         )
-    # Defensive cleanup in case the model wraps in a code fence anyway
     text = text.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
 
-    return json.loads(text)
+    try:
+        package = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Groq returned invalid JSON for the script package.") from exc
+
+    return _normalize_package(package, topic, seo_keywords)
 
 
 if __name__ == "__main__":
     import sys
+
     topic = sys.argv[1] if len(sys.argv) > 1 else "space discoveries"
     result = generate_script(topic)
     print(json.dumps(result, indent=2))
