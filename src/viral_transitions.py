@@ -128,7 +128,10 @@ if __name__ == "__main__":
     lines, label = build_xfade_chain(
         3, 2.0, 0.35, cycle_transitions(("slideleft", "bogus_fx", "zoomin"), 2)
     )
-    assert len(lines) == 2 and label == "xf2"
-    assert "transition=slideleft" in lines[0]
-    assert "transition=fade" in lines[1], "bogus_fx should have been sanitized to fade"
+    if not (len(lines) == 2 and label == "xf2"):
+        raise AssertionError()
+    if not ("transition=slideleft" in lines[0]):
+        raise AssertionError()
+    if not ("transition=fade" in lines[1]):
+        raise AssertionError("bogus_fx should have been sanitized to fade")
     print("[transitions] self-check OK")

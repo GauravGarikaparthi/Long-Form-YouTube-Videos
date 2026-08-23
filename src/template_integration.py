@@ -114,7 +114,9 @@ def apply_template_to_pipeline(
 if __name__ == "__main__":
     # Self-check: auto path + explicit path + bad-name fallback.
     cfg_auto = apply_template_to_pipeline("top 10 tallest buildings")
-    assert cfg_auto.name == "RANKING"
+    if cfg_auto.name != "RANKING":
+        raise AssertionError
     cfg_named = apply_template_to_pipeline("anything", )
-    assert cfg_named.name == DEFAULT_TEMPLATE.name
+    if cfg_named.name != DEFAULT_TEMPLATE.name:
+        raise AssertionError
     print("[integration] self-check OK")

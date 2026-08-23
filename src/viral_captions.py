@@ -121,7 +121,7 @@ def ass_font_size(height: int) -> int:
 def ass_style_line(style_key: str, font_size: int) -> str:
     """
     Builds the ASS '[V4+ Styles]' line for this style. Alignment 5 =
-    middle-center; the assembler additionally pins position with \\pos so
+    middle-center; the assembler additionally pins position with \pos so
     wrapped lines stay centered too.
     """
     style = get_style(style_key)
@@ -145,10 +145,14 @@ def ass_style_line(style_key: str, font_size: int) -> str:
 
 if __name__ == "__main__":
     # Self-check: color conversion + style-line generation for all styles.
-    assert hex_to_ass("#FFFF00") == "&H0000FFFF", hex_to_ass("#FFFF00")
-    assert hex_to_ass("#FF1493") == "&H009314FF", hex_to_ass("#FF1493")
+    if hex_to_ass("#FFFF00") != "&H0000FFFF":
+        raise AssertionError(hex_to_ass("#FFFF00"))
+    if hex_to_ass("#FF1493") != "&H009314FF":
+        raise AssertionError(hex_to_ass("#FF1493"))
     for key in CAPTION_STYLES:
         line = ass_style_line(key, 90)
-        assert line.startswith("Style: Kinetic,Montserrat,90,"), line
-        assert ",5,0,0,0,1" in line, f"alignment 5 missing for {key}"
+        if not line.startswith("Style: Kinetic,Montserrat,90,"):
+            raise AssertionError(line)
+        if ",5,0,0,0,1" not in line:
+            raise AssertionError(f"alignment 5 missing for {key}")
     print(f"[captions] self-check OK ({len(CAPTION_STYLES)} styles)")
