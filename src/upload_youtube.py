@@ -5,6 +5,8 @@ Auth uses a long-lived OAuth refresh token (generated once locally via
 get_refresh_token.py) so the pipeline can run unattended in CI.
 """
 
+from __future__ import annotations
+
 import os
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build

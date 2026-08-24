@@ -2,14 +2,14 @@
 
 Fully automated pipeline: finds a trending topic → writes a script → generates
 a voiceover → pulls stock footage → assembles a video → uploads to YouTube.
-Runs daily via GitHub Actions.
+Runs every four hours via GitHub Actions.
 
 ## How it works
 
 ```
 trend_fetch.py       -> picks a trending topic (Google Trends, with fallback list)
-generate_script.py    -> Groq (Llama 3.3 70B) writes title/description/tags/narration/keywords
-generate_voiceover.py -> Piper (local, open-source TTS) turns narration into a WAV
+generate_script.py    -> Groq (gpt-oss-120b) writes title/description/tags/narration/keywords
+generate_voiceover.py -> Kokoro (local TTS; Piper fallback) turns narration into a WAV
 fetch_visuals.py      -> Pexels downloads matching stock clips
 assemble_video.py     -> ffmpeg stitches clips + voiceover + title card
 generate_thumbnail.py -> Pillow makes a 1280x720 thumbnail from a video frame
@@ -24,16 +24,15 @@ Sign up free at https://console.groq.com/ → API Keys → Create API Key. No
 credit card required.
 
 ### 2. Voiceover: nothing to sign up for
-Voiceover uses [Piper](https://github.com/OHF-Voice/piper1-gpl), a local,
-open-source neural TTS engine that runs directly on the GitHub Actions
-runner (or your machine when testing locally). No account, no API key, no
-character limit or monthly quota — it's genuinely free and unlimited since
-nothing is being metered by a third party. The voice model (~60MB) downloads
-automatically on first use and is cached across CI runs.
+Voiceover uses [Kokoro](https://github.com/thewh1teagle/kokoro-onnx), a local,
+open-source TTS engine. The GitHub workflow downloads and caches its English
+model automatically. Languages without a configured Kokoro voice use
+[Piper](https://github.com/OHF-Voice/piper1-gpl) as a local fallback; its
+voice model downloads on first use. Neither path requires an account or has a
+usage quota.
 
-Optional: set `PIPER_VOICE` to any other voice name from the
-[Piper voices list](https://github.com/OHF-Voice/piper1-gpl/blob/main/docs/VOICES.md)
-to change the narration voice (default: `en_US-lessac-medium`).
+For local English runs, place `kokoro-v1.0.onnx` and `voices-v1.0.bin` in
+`models/`; the workflow's download step shows their source URLs.
 
 ### 3. Pexels (stock footage)
 Sign up free at https://www.pexels.com/api/ and copy your API key.
@@ -69,7 +68,7 @@ Add each of:
 
 ### 6. Push this repo to GitHub
 The workflow in `.github/workflows/daily_video.yml` will then run automatically
-every day at 14:00 UTC. You can also trigger it manually from the Actions tab
+every four hours. You can also trigger it manually from the Actions tab
 ("Run workflow") to test before waiting for the schedule.
 
 ## Testing locally before relying on the schedule
@@ -104,7 +103,6 @@ python main.py
 - **Groq free-tier limits**: rate limits are generous but not unlimited —
   if you hit a 429 on a run, it's a temporary rate limit, not a billing
   issue; just re-run later.
-- **Voice quality**: Piper is a solid, natural-sounding local TTS engine,
-  but it's not quite ElevenLabs-tier. If you ever want to switch back to
-  a paid TTS provider for higher quality, generate_voiceover.py is the
-  only file that needs to change.
+- **Voice quality**: Kokoro is the default English voice; Piper is the
+  fallback for the other listed languages. Switching TTS providers is
+  isolated to `generate_voiceover.py`.

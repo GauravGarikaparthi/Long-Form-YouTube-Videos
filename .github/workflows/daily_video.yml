@@ -2,7 +2,7 @@ name: Daily YouTube Video
 
 on:
   schedule:
-    - cron: "0 0,4,8,12,16,20 * * *"   # runs daily at 14:00 UTC — change if you want a different time
+    - cron: "0 0,4,8,12,16,20 * * *"   # runs six times daily (00:00, 04:00, ..., 20:00 UTC)
   workflow_dispatch:        # adds a manual "Run workflow" button in the Actions tab, with inputs below
     inputs:
       topic_mode:

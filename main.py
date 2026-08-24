@@ -20,6 +20,7 @@ from assemble_video import assemble_video
 from generate_thumbnail import generate_thumbnail
 from upload_youtube import upload_video
 from select_music import pick_track
+from template_integration import apply_template_to_pipeline
 
 WORK_DIR = "work"
 OUTPUT_DIR = "output"
@@ -27,7 +28,6 @@ OUTPUT_DIR = "output"
 # Voiceover uses Piper (local, no API key needed) -- not in this list.
 REQUIRED_ENV_VARS = [
     "GROQ_API_KEY",
-    "PEXELS_API_KEY",
     "YT_CLIENT_ID",
     "YT_CLIENT_SECRET",
     "YT_REFRESH_TOKEN",
@@ -38,7 +38,12 @@ def _check_required_env_vars():
     # Fail fast with one clear message instead of burning steps 1-6 (and
     # their API usage) only to hit a cryptic error on the last step because
     # a GitHub secret was never added or is empty.
-    missing = [name for name in REQUIRED_ENV_VARS if not os.environ.get(name, "").strip()]
+    required = list(REQUIRED_ENV_VARS)
+    # Illustration mode generates visuals without Pexels, so it must not
+    # require a Pexels secret.
+    if os.environ.get("VISUAL_STYLE", "pexels").strip().lower() != "illustration":
+        required.append("PEXELS_API_KEY")
+    missing = [name for name in required if not os.environ.get(name, "").strip()]
     if missing:
         raise RuntimeError(
             "Missing required secret(s): " + ", ".join(missing) + ". "
@@ -77,9 +82,6 @@ def run():
     voiceover_path = os.path.join(WORK_DIR, "voiceover.wav")
     generate_voiceover(package["narration"], voiceover_path, language=language)
     
-    music_path = pick_track()
-    if music_path:
-        print(f"  -> Background music: {os.path.basename(music_path)}")
     # VisualProvider: "pexels" | "illustration"
     visual_style = os.environ.get("VISUAL_STYLE", "pexels")
     orientation = "portrait" if is_shorts else "landscape"
@@ -111,12 +113,17 @@ def run():
     if not clip_paths:
         raise RuntimeError("No visual clips generated for any keyword - aborting.")
 
+    template_config = apply_template_to_pipeline(topic, num_clips=len(clip_paths))
+    music_path = pick_track() if template_config.music_volume > 0 else None
+    if music_path:
+        print(f"  -> Background music: {os.path.basename(music_path)}")
+
     print(f"Step 6/7: Assembling {'Shorts (1080x1920)' if is_shorts else 'video (1920x1080)'} + thumbnail...")
     video_path = os.path.join(OUTPUT_DIR, "video.mp4")
     assemble_video(
         clip_paths, voiceover_path, package["title"], video_path,
         work_dir=WORK_DIR, vertical=is_shorts, narration=package["narration"],
-        music_path=music_path,
+        music_path=music_path, template_config=template_config,
     )
     thumbnail_path = os.path.join(OUTPUT_DIR, "thumbnail.jpg")
     generate_thumbnail(video_path, package["title"], thumbnail_path, vertical=is_shorts)

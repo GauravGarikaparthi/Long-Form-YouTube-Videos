@@ -22,6 +22,8 @@ picked twice in a row across consecutive scheduled runs (tracked via a
 small state file), so a 6x/day schedule doesn't repeat a bed back-to-back.
 """
 
+from __future__ import annotations
+
 import json
 import os
 import random

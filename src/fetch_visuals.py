@@ -7,8 +7,10 @@ so one provider having no match (or a rate limit) doesn't shrink the video:
      are real, stable, documented endpoints
   3. A small, hand-curated local Mixkit folder (mixkit/<orientation>/*.mp4)
      -- Mixkit has no public API at all, so this is a manually-downloaded
-     fallback library, same approach as select_music.py takes for music
+fallback library, same approach as select_music.py takes for music
 """
+
+from __future__ import annotations
 
 import os
 import random
