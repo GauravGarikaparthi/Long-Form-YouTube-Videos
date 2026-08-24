@@ -45,7 +45,6 @@ def apply_template_to_pipeline(
                 a warning is logged (clips simply cycle; nothing breaks).
     duration:   optional voiceover duration hint (informational only today).
     """
-    """
     choice = env_str("VIRAL_TEMPLATE", "auto").lower()
 
     if choice in ("", "auto", "default"):

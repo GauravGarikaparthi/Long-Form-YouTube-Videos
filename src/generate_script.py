@@ -184,7 +184,6 @@ Here are REAL phrases people are currently searching for around this topic \
 (from YouTube autocomplete and Google Trends related queries) -- use them ONLY as
 phrasing hints, never as a replacement for the topic itself:
 {keyword_list}
-```"""
 
 SEO requirements (all secondary to staying on-topic):
 - The PRIMARY keyword (prefer the first phrase above if it fits) MUST be the first
@@ -196,7 +195,7 @@ SEO requirements (all secondary to staying on-topic):
 - Do NOT keyword-stuff - it must still read naturally to a human"""
 
     user_prompt = f"""Topic (the video MUST be specifically about this -- do not drift to a \
-related but different subject, even if the SEO keywords below point elsewhere): {topic}{keyword_block}
+related but different subject, even if the SEO keywords below point elsewhere): {base_topic}{keyword_block}
 
 Create a faceless YouTube Shorts package on this exact topic. Spoken narration MUST fit \
 in 50-55 seconds (120-135 words). The first sentence is the 3-second hook.
