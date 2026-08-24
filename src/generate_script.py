@@ -92,12 +92,12 @@ def _trim_narration(narration: str) -> str:
     return text
 
 
-def _primary_keyword(topic: str, seo_keywords: list[str] | None) -> str:
+def _primary_keyword(input_topic: str, seo_keywords: list[str] | None) -> str:
     if seo_keywords:
         candidate = seo_keywords[0].strip()
         if candidate:
             return candidate
-    return topic.strip()
+    return input_topic.strip()
 
 
 def _format_title(raw: str, keyword: str) -> str:
@@ -128,11 +128,11 @@ def _format_description(description: str) -> str:
     return f"{SHORTS_TAG}\n{body}".strip()
 
 
-def _normalize_package(package: dict, topic: str, seo_keywords: list[str] | None) -> dict:
+def _normalize_package(package: dict, base_topic: str, seo_keywords: list[str] | None) -> dict:
     if not isinstance(package, dict):
         raise RuntimeError("Groq returned JSON that is not an object.")
 
-    keyword = _primary_keyword(topic, seo_keywords)
+    keyword = _primary_keyword(base_topic, seo_keywords)
     narration = _trim_narration(str(package.get("narration") or ""))
     if _word_count(narration) < 8:
         raise RuntimeError("Generated narration is empty or too short to use.")
@@ -148,17 +148,17 @@ def _normalize_package(package: dict, topic: str, seo_keywords: list[str] | None
         visual = [visual]
 
     return {
-        "title": _format_title(str(package.get("title") or topic), keyword),
+        "title": _format_title(str(package.get("title") or base_topic), keyword),
         "description": _format_description(str(package.get("description") or "")),
         "tags": tags[:12],
         "narration": narration,
         "visual_keywords": [str(v).strip() for v in visual if str(v).strip()][:8],
-        "thumbnail_hook": " ".join(_format_title(str(package.get("title") or topic), keyword).split()[:3]),
+        "thumbnail_hook": " ".join(_format_title(str(package.get("title") or base_topic), keyword).split()[:3]),
     }
 
 
 def generate_script(
-    topic: str,
+    base_topic: str,
     seo_keywords: list[str] | None = None,
     api_key: str | None = None,
     language: str = DEFAULT_LANGUAGE,
@@ -184,6 +184,7 @@ Here are REAL phrases people are currently searching for around this topic \
 (from YouTube autocomplete and Google Trends related queries) -- use them ONLY as
 phrasing hints, never as a replacement for the topic itself:
 {keyword_list}
+```"""
 
 SEO requirements (all secondary to staying on-topic):
 - The PRIMARY keyword (prefer the first phrase above if it fits) MUST be the first
