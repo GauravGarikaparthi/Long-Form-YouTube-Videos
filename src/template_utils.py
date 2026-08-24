@@ -24,8 +24,7 @@ from viral_templates import (
 
 def get_template_transitions(template_type: ViralTemplateType) -> list[str]:
     """Get optimal transition sequence for a template."""
-    config = get_template_config(template_type)
-    
+
     transitions_map = {
         ViralTemplateType.LOCO: [
             "slideleft", "slideright", "fade", "hblur", "wiperight", "wipeleft"

@@ -103,7 +103,7 @@ def _ass_timestamp(seconds: float) -> str:
 
 
 def _ass_escape(text: str) -> str:
-    return text.replace("\\", r"\\").replace("{", r"\{").replace("}", r"\}")
+    return text.replace("\\", r"\\\\").replace("{", r"\{").replace("}", r"\}")
 
 
 def _build_karaoke_ass(
@@ -124,8 +124,6 @@ def _build_karaoke_ass(
     font_size = ass_font_size(height)
     pos_x = width // 2          # <-- exact horizontal center (the fix)
     pos_y = int(height * 0.50)  # vertical center of the middle third
-    margin_l = int(width * 0.08)
-    margin_r = int(width * 0.12)
 
     header = (
         "[Script Info]\n"
