@@ -1,147 +1,128 @@
 """
-Template-aware video assembly enhancements for viral YouTube Shorts 2026.
-Extends assemble_video.py with:
-- Template-specific clip pacing
-- Ranking system overlays
-- Polaroid nostalgic frame effects
-- Beat synchronization for music
-- Transition selection based on template
-- High-retention visual hooks
+Shared utilities for the viral template system: environment-variable readers
+used by template_integration.py, TemplateConfig validation/repair, and the
+bridge to background-music selection that assemble_video.py calls directly.
+
+This file previously imported names (ViralTemplateType, get_template_config,
+select_best_template) that never existed in viral_templates.py, while
+template_integration.py imported names FROM here (env_float, env_str, log,
+repair_template_config, validate_template_config) that this file never
+defined either -- both sides were built against an API that was never
+actually implemented. This version matches the real, current
+viral_templates.py (TemplateConfig, TEMPLATES, select_template, get_template)
+and provides exactly what template_integration.py and assemble_video.py
+actually import.
 """
 
 from __future__ import annotations
 
-from typing import Sequence
+import os
+from dataclasses import replace
 
-from viral_templates import (
-    ViralTemplateType,
-    get_template_config,
-)
+from viral_captions import CAPTION_STYLES
+from viral_templates import DEFAULT_TEMPLATE, TemplateConfig
+from select_music import pick_track
 
-def get_template_transitions(template_type: ViralTemplateType) -> list[str]:
-    """Get optimal transition sequence for a template."""
-
-    transitions_map = {
-        ViralTemplateType.LOCO: [
-            "slideleft", "slideright", "fade", "hblur", "wiperight", "wipeleft"
-        ],
-        ViralTemplateType.NOSTALGIC_MORPH: [
-            "xfade", "fade", "fade", "xfade", "fade"
-        ],
-        ViralTemplateType.RANKING: [
-            "slideright", "slideleft", "wiperight", "wipeleft", "fade"
-        ],
-        ViralTemplateType.BEFORE_AFTER: [
-            "fade", "fade", "fade"
-        ],
-        ViralTemplateType.POV_TRAVELING: [
-            "slideleft", "fade", "slideleft", "fade", "slideleft"
-        ],
-        ViralTemplateType.BEAT_SYNC: [
-            "zoomin", "fade", "zoomin", "fade"
-        ],
-        ViralTemplateType.GRUNGE_BOLD: [
-            "wiperight", "wipeleft", "slideleft", "slideright", "hblur"
-        ],
-        ViralTemplateType.MOTIVATIONAL_TYPOGRAPHIC: [
-            "fade", "slideleft", "fade", "wiperight"
-        ],
-        ViralTemplateType.BTS: [
-            "fade", "fade", "fade"
-        ],
-        ViralTemplateType.EVERYDAY_HACKS: [
-            "slideleft", "fade", "slideleft", "slideright", "fade"
-        ],
-    }
-    
-    return transitions_map.get(template_type, ["fade", "slideleft"])
+LOG_PREFIX = "[template_utils]"
 
 
-def get_template_color_grade(template_type: ViralTemplateType) -> dict:
-    """Get color grading adjustments for a template."""
-    config = get_template_config(template_type)
-    
-    color_grading = {
-        "vibrant": {
-            "saturation": 1.35,
-            "brightness": 1.05,
-            "contrast": 1.25,
-        },
-        "warm": {
-            "saturation": 1.20,
-            "brightness": 1.08,
-            "contrast": 1.15,
-        },
-        "cool": {
-            "saturation": 1.15,
-            "brightness": 0.95,
-            "contrast": 1.20,
-        },
-        "desaturated": {
-            "saturation": 0.70,
-            "brightness": 0.90,
-            "contrast": 1.40,
-        },
-    }
-    
-    return color_grading.get(config.color_grade, color_grading["vibrant"])
+def log(message: str) -> None:
+    print(f"{LOG_PREFIX} {message}", flush=True)
 
 
-def get_music_emphasis_mix(template_type: ViralTemplateType) -> tuple[float, float]:
+def env_str(name: str, default: str = "") -> str:
+    """Reads an environment variable as a stripped string, or `default` if unset/blank."""
+    value = os.environ.get(name, "")
+    return value.strip() if value.strip() else default
+
+
+def env_float(name: str, default: float, lo: float, hi: float) -> float:
     """
-    Get audio mix levels for a template.
-    
-    Returns:
-        (voice_db, music_db) tuple
+    Reads an environment variable as a float, clamped to [lo, hi]. Falls back
+    to `default` (also clamped) if unset or unparsable -- a malformed
+    override should never crash the run.
     """
-    config = get_template_config(template_type)
-    
-    mixes = {
-        "voice_forward": (-3.0, -25.0),  # Voice louder, music quiet
-        "music_forward": (-12.0, -15.0),  # Music more prominent
-        "balanced": (-6.0, -20.0),  # Balanced mix
-    }
-    
-    return mixes.get(config.audio_emphasis, mixes["balanced"])
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return max(lo, min(hi, default))
+    try:
+        value = float(raw)
+    except ValueError:
+        log(f"{name}={raw!r} is not a valid number -- ignoring override.")
+        return max(lo, min(hi, default))
+    clamped = max(lo, min(hi, value))
+    if clamped != value:
+        log(f"{name}={value} out of range [{lo}, {hi}] -- clamped to {clamped}.")
+    return clamped
 
 
-def validate_template_compatibility(
-    template_type: ViralTemplateType,
-    num_clips: int,
-    total_duration_seconds: float,
-) -> tuple[bool, str]:
+def validate_template_config(config: TemplateConfig) -> list[str]:
+    """Returns a list of human-readable problems with a TemplateConfig, empty if valid."""
+    problems: list[str] = []
+
+    if config.clip_seconds <= 0:
+        problems.append(f"clip_seconds must be positive (got {config.clip_seconds})")
+    if config.transition_duration <= 0:
+        problems.append(f"transition_duration must be positive (got {config.transition_duration})")
+    if config.transition_duration >= config.clip_seconds:
+        problems.append(
+            f"transition_duration ({config.transition_duration}) must be less than "
+            f"clip_seconds ({config.clip_seconds}) or scenes fully overlap"
+        )
+    if not config.transitions:
+        problems.append("transitions palette is empty")
+    if not (0.0 <= config.music_volume <= 1.0):
+        problems.append(f"music_volume out of [0, 1] range (got {config.music_volume})")
+    if config.caption_style.upper() not in CAPTION_STYLES:
+        problems.append(f"caption_style '{config.caption_style}' is not a known style")
+
+    return problems
+
+
+def repair_template_config(config: TemplateConfig) -> TemplateConfig:
     """
-    Validate if content is compatible with template.
-    
-    Returns:
-        (is_valid, error_message_or_note)
+    Fixes an invalid TemplateConfig by falling back to DEFAULT_TEMPLATE's
+    values field-by-field, only where the current value is actually invalid --
+    valid fields on the original config are preserved.
     """
-    config = get_template_config(template_type)
-    
-    # Check clip count
-    if num_clips < 3:
-        return False, f"{template_type.value} requires at least 3 clips (you have {num_clips})"
-    
-    if num_clips > config.max_clips * 2:
-        return False, f"{template_type.value} works best with {config.max_clips} or fewer clips"
-    
-    # Check duration
-    min_duration = (config.clip_duration_ms / 1000.0) * 3  # At least 3 clips
-    max_duration = 60.0  # YouTube Shorts max
-    
-    if total_duration_seconds < min_duration:
-        return False, f"Content too short for {template_type.value} (min {min_duration}s)"
-    
-    if total_duration_seconds > max_duration:
-        return False, f"Content too long for YouTube Shorts (max 60s, you have {total_duration_seconds}s)"
-    
-    return True, f"✓ {template_type.value} template is compatible with your content"
+    fixes: dict = {}
+
+    if config.clip_seconds <= 0:
+        fixes["clip_seconds"] = DEFAULT_TEMPLATE.clip_seconds
+    if config.transition_duration <= 0 or config.transition_duration >= config.clip_seconds:
+        fixes["transition_duration"] = min(
+            DEFAULT_TEMPLATE.transition_duration,
+            fixes.get("clip_seconds", config.clip_seconds) * 0.25,
+        )
+    if not config.transitions:
+        fixes["transitions"] = DEFAULT_TEMPLATE.transitions
+    if not (0.0 <= config.music_volume <= 1.0):
+        fixes["music_volume"] = DEFAULT_TEMPLATE.music_volume
+    if config.caption_style.upper() not in CAPTION_STYLES:
+        fixes["caption_style"] = DEFAULT_TEMPLATE.caption_style
+
+    if not fixes:
+        return config
+
+    log(f"Repairing template '{config.name}': {list(fixes.keys())}")
+    return replace(config, **fixes)
 
 
-# Export for use in main.py
+def find_music_track(config: TemplateConfig | None = None) -> str | None:
+    """
+    Picks a background-music track. Delegates to select_music.pick_track()
+    -- the existing rotation-aware picker -- rather than a second
+    music-selection system. `config` is accepted for forward compatibility
+    (e.g. genre-tagged folders per template later) but isn't used yet.
+    """
+    return pick_track()
+
+
 __all__ = [
-    "get_template_transitions",
-    "get_template_color_grade",
-    "get_music_emphasis_mix",
-    "validate_template_compatibility",
+    "log",
+    "env_str",
+    "env_float",
+    "validate_template_config",
+    "repair_template_config",
+    "find_music_track",
 ]
