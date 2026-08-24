@@ -260,8 +260,12 @@ def list_templates() -> list[str]:
 
 if __name__ == "__main__":
     # Self-check: selection sanity across representative topics.
-    assert select_template("top 5 space discoveries").name == "RANKING"
-    assert select_template("how to fold shirts fast").name == "EVERYDAY_HACKS"
-    assert select_template("my 2016 vs now glow up").name == "NOSTALGIC_MORPH"
-    assert select_template("quantum flux capacitor repair").name == DEFAULT_TEMPLATE.name
+    if select_template("top 5 space discoveries").name != "RANKING":
+        raise AssertionError
+    if select_template("how to fold shirts fast").name != "EVERYDAY_HACKS":
+        raise AssertionError
+    if select_template("my 2016 vs now glow up").name != "NOSTALGIC_MORPH":
+        raise AssertionError
+    if select_template("quantum flux capacitor repair").name != DEFAULT_TEMPLATE.name:
+        raise AssertionError
     print(f"[templates] self-check OK ({len(TEMPLATES)} templates)")
