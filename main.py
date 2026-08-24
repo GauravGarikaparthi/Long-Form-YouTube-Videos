@@ -21,6 +21,7 @@ from generate_thumbnail import generate_thumbnail
 from upload_youtube import upload_video
 from select_music import pick_track
 from template_integration import apply_template_to_pipeline
+from performance_optimizer import media_duration
 
 WORK_DIR = "work"
 OUTPUT_DIR = "output"
@@ -81,7 +82,12 @@ def run():
     print(f"Step 4/7: Generating voiceover ({language})...")
     voiceover_path = os.path.join(WORK_DIR, "voiceover.wav")
     generate_voiceover(package["narration"], voiceover_path, language=language)
-    
+
+    music_path = pick_track()
+    if music_path:
+        print(f"  -> Background music: {os.path.basename(music_path)}")
+
+    voice_duration = media_duration(voiceover_path)    
     # VisualProvider: "pexels" | "illustration"
     visual_style = os.environ.get("VISUAL_STYLE", "pexels")
     orientation = "portrait" if is_shorts else "landscape"
@@ -113,11 +119,11 @@ def run():
     if not clip_paths:
         raise RuntimeError("No visual clips generated for any keyword - aborting.")
 
-    template_config = apply_template_to_pipeline(topic, num_clips=len(clip_paths))
-    music_path = pick_track() if template_config.music_volume > 0 else None
-    if music_path:
-        print(f"  -> Background music: {os.path.basename(music_path)}")
-
+    template_config = apply_template_to_pipeline(
+        topic, num_clips=len(clip_paths), duration=voice_duration,
+    )
+    print(f"  -> Template: {template_config.name}")
+    
     print(f"Step 6/7: Assembling {'Shorts (1080x1920)' if is_shorts else 'video (1920x1080)'} + thumbnail...")
     video_path = os.path.join(OUTPUT_DIR, "video.mp4")
     assemble_video(
