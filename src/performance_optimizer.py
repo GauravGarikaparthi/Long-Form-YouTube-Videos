@@ -17,6 +17,7 @@ What lives here (and why):
 
 from __future__ import annotations
 
+import ctypes.util
 import json
 import os
 import platform
@@ -122,6 +123,13 @@ _ENCODER_LIST_CACHE: str | None = None
 _ENCODE_ARGS_CACHE: list[str] | None = None
 
 
+def _nvenc_available() -> bool:
+    """True iff the CUDA driver library needed by h264_nvenc is present."""
+    if platform.system() != "Linux":
+        return False
+    return ctypes.util.find_library("cuda") is not None
+
+
 def _available_encoders() -> str:
     global _ENCODER_LIST_CACHE
     if _ENCODER_LIST_CACHE is None:
@@ -159,7 +167,7 @@ def video_encode_args() -> list[str]:
         # Bitrate-controlled: VideoToolbox ignores x264-style CRF/preset knobs.
         chosen = ["-c:v", "h264_videotoolbox", "-b:v", "8M"]
         log("Using hardware encoder: h264_videotoolbox")
-    elif "h264_nvenc" in encoders:
+    elif "h264_nvenc" in encoders and _nvenc_available():
         chosen = ["-c:v", "h264_nvenc", "-b:v", "8M"]
         log("Using hardware encoder: h264_nvenc")
     else:
