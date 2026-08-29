@@ -132,7 +132,7 @@ def run():
         music_path=music_path, template_config=template_config,
     )
     thumbnail_path = os.path.join(OUTPUT_DIR, "thumbnail.jpg")
-    generate_thumbnail(video_path, package["title"], thumbnail_path, vertical=is_shorts)
+    generate_thumbnail(video_path, package["title"], thumbnail_path, _vertical=is_shorts)
 
     print("Step 7/7: Uploading to YouTube...")
     title = package["title"]
