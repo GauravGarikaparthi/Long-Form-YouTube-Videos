@@ -243,7 +243,7 @@ castle" or "knights sword fight", not the show's name or any character name)."""
     except json.JSONDecodeError as exc:
         raise RuntimeError("Groq returned invalid JSON for the script package.") from exc
 
-    return _normalize_package(package, topic, seo_keywords)
+    return _normalize_package(package, base_topic, seo_keywords)
 
 
 if __name__ == "__main__":
