@@ -8,6 +8,7 @@ get_refresh_token.py) so the pipeline can run unattended in CI.
 from __future__ import annotations
 
 import os
+from google.auth.exceptions import RefreshError
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
@@ -35,10 +36,17 @@ def upload_video(
     tags: list[str],
     thumbnail_path: str | None = None,
     privacy_status: str = "public",
-    category_id: str = "22",  # "People & Blogs"; change to fit your niche
+    category_id: str = "22",
 ):
-    creds = _get_credentials()
-    youtube = build("youtube", "v3", credentials=creds)
+    try:
+        creds = _get_credentials()
+        youtube = build("youtube", "v3", credentials=creds)
+    except RefreshError as exc:
+        raise RuntimeError(
+            "YouTube OAuth refresh token is invalid or expired. "
+            "Regenerate it locally with: python get_refresh_token.py, "
+            "then update the YT_REFRESH_TOKEN secret in GitHub repo settings."
+        ) from exc
 
     body = {
         "snippet": {
@@ -57,10 +65,17 @@ def upload_video(
     request = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
 
     response = None
-    while response is None:
-        status, response = request.next_chunk()
-        if status:
-            print(f"[upload_youtube] Upload progress: {int(status.progress() * 100)}%")
+    try:
+        while response is None:
+            status, response = request.next_chunk()
+            if status:
+                print(f"[upload_youtube] Upload progress: {int(status.progress() * 100)}%")
+    except RefreshError as exc:
+        raise RuntimeError(
+            "YouTube OAuth refresh token is invalid or expired. "
+            "Regenerate it locally with: python get_refresh_token.py, "
+            "then update the YT_REFRESH_TOKEN secret in GitHub repo settings."
+        ) from exc
 
     video_id = response["id"]
     print(f"[upload_youtube] Uploaded: https://www.youtube.com/watch?v={video_id}")
