@@ -216,19 +216,41 @@ used to search stock footage, never shown to a viewer. They should be 5-8 concre
 royalty-free STOCK footage library that has no footage of any real, named person, brand, or copyrighted \
 movie/show/game -- so NEVER use a person's name, a show/movie/game title, a team name, or a brand as a \
 keyword, even if the topic is about a specific person or franchise. Instead describe the generic \
-scene/action/mood the narration evokes (e.g. for a video about a footballer, use "soccer player scoring \
+scene/action/mood the narration evokes (e.g. for a footballer, use "soccer player scoring \
 goal" or "stadium crowd cheering", not the player's name; for a fantasy show, use "dragon flying over \
 castle" or "knights sword fight", not the show's name or any character name)."""
 
-    response = client.chat.completions.create(
-        model=MODEL,
-        max_tokens=4096,
-        response_format={"type": "json_object"},
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ],
-    )
+    response = None
+    last_error = None
+    for attempt in range(1, 4):
+        try:
+            response = client.chat.completions.create(
+                model=MODEL,
+                max_tokens=4096,
+                response_format={"type": "json_object"},
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
+            )
+            break
+        except Exception as exc:
+            last_error = exc
+            is_json_error = (
+                "json_validate_failed" in str(getattr(exc, "args", [""]))
+                or "Failed to validate JSON" in str(exc)
+            )
+            if not is_json_error or attempt == 3:
+                raise
+            print(f"[generate_script] Groq JSON validation failed (attempt {attempt}/3), retrying with simplified prompt...")
+            user_prompt = (
+                f"Write a JSON object with keys title, description, tags, narration, visual_keywords "
+                f"about: {base_topic}. Narration must be 120-135 words. "
+                f"Return ONLY valid JSON, no markdown."
+            )
+
+    if response is None:
+        raise RuntimeError(f"Groq script generation failed after 3 attempts: {last_error}")
 
     text = (response.choices[0].message.content or "").strip()
     if not text:
