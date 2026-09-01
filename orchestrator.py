@@ -130,7 +130,7 @@ class Pipeline:
         start = time.time()
         self.logger.info(f"Pipeline started | topic={topic!r} provider={self.settings.llm_provider}")
 
-        shared_client = httpx.AsyncClient(timeout=120.0, connect_timeout=30.0)
+        shared_client = httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=30.0))
 
         try:
             async with shared_client as client:
