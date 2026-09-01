@@ -1,153 +1,58 @@
-# Auto YouTube Uploader
+# Long-Form AI Video Engine
 
-Fully automated pipeline: finds a trending topic → writes a script → generates
-a voiceover → pulls stock footage → assembles a video → uploads to YouTube.
-Runs every four hours via GitHub Actions.
+Fully automated pipeline: takes a text topic → writes a high-CTR script → generates
+a voiceover → creates AI-generated visuals → animates scenes → assembles a
+long-form video → packages everything with AI-generated metadata as a downloadable
+GitHub Actions artifact.
 
-## How it works
-
-```
-trend_fetch.py       -> picks a trending topic (Google Trends, with fallback list)
-generate_script.py    -> Groq (gpt-oss-120b) writes title/description/tags/narration/keywords
-generate_voiceover.py -> Kokoro (local TTS; Piper fallback) turns narration into a WAV
-fetch_visuals.py      -> Pexels downloads matching stock clips
-assemble_video.py     -> ffmpeg stitches clips + voiceover + title card
-generate_thumbnail.py -> Pillow makes a 1280x720 thumbnail from a video frame
-upload_youtube.py     -> YouTube Data API v3 uploads the final video
-main.py               -> runs all of the above in order
-```
-
-## One-time setup (about 30-45 minutes)
-
-### 1. Groq API key (script writing, free)
-Sign up free at https://console.groq.com/ → API Keys → Create API Key. No
-credit card required.
-
-### 2. Voiceover: nothing to sign up for
-Voiceover uses [Kokoro](https://github.com/thewh1teagle/kokoro-onnx), a local,
-open-source TTS engine. The GitHub workflow downloads and caches its English
-model automatically. Languages without a configured Kokoro voice use
-[Piper](https://github.com/OHF-Voice/piper1-gpl) as a local fallback; its
-voice model downloads on first use. Neither path requires an account or has a
-usage quota.
-
-For local English runs, place `kokoro-v1.0.onnx` and `voices-v1.0.bin` in
-`models/`; the workflow's download step shows their source URLs.
-
-### 3. Pexels (stock footage)
-Sign up free at https://www.pexels.com/api/ and copy your API key.
-
-### 4. YouTube Data API v3 (upload)
-This is the fiddly one:
-
-1. Go to https://console.cloud.google.com/ and create a project
-2. In "APIs & Services" → "Library", enable **YouTube Data API v3**
-3. In "APIs & Services" → "OAuth consent screen": set it up as **External**,
-   add your own Google account as a **Test user** (this avoids Google's
-   verification review, but limits the token to your account only — that's
-   fine here since you're uploading to your own channel)
-4. In "APIs & Services" → "Credentials", create an **OAuth client ID** of
-   type **Desktop app**. Download the JSON.
-5. Save that file as `client_secret.json` in this project folder
-6. Run locally (not in CI): `pip install -r requirements.txt` then
-   `python get_refresh_token.py`
-7. A browser opens — log into the Google account that owns your YouTube
-   channel and approve access
-8. The script prints `YT_CLIENT_ID`, `YT_CLIENT_SECRET`, and
-   `YT_REFRESH_TOKEN` — save all three
-
-### 5. Add everything as GitHub Secrets
-In your repo: Settings → Secrets and variables → Actions → New repository secret.
-Add each of:
-
-- `GROQ_API_KEY`
-- `PEXELS_API_KEY`
-- `YT_CLIENT_ID`
-- `YT_CLIENT_SECRET`
-- `YT_REFRESH_TOKEN`
-
-### 6. Push this repo to GitHub
-The workflow in `.github/workflows/daily_video.yml` will then run automatically
-every four hours. You can also trigger it manually from the Actions tab
-("Run workflow") to test before waiting for the schedule.
-
-## Testing locally before relying on the schedule
-
-```bash
-pip install -r requirements.txt
-# also install ffmpeg locally (brew install ffmpeg / apt install ffmpeg)
-export GROQ_API_KEY=...
-export PEXELS_API_KEY=...
-export YT_CLIENT_ID=...
-export YT_CLIENT_SECRET=...
-export YT_REFRESH_TOKEN=...
-python main.py
-```
-
-## Things worth knowing
-
-- **YouTube upload quota**: the default quota is 10,000 units/day, and one
-  upload costs 1,600 units — so you can comfortably upload several times a
-  day if you ever want to.
-- **Content policy risk**: YouTube can flag heavily templated/reused content
-  as "repetitious" or low-effort, which affects monetization. Varying the
-  script style, voice, and visuals over time reduces this risk.
-- **First privacy status**: the workflow uploads as `public` by default.
-  Change `YT_PRIVACY_STATUS` to `private` or `unlisted` in the workflow file
-  if you'd rather review each video before it goes live.
-- **Costs**: everything in this pipeline is free with no monthly quota --
-  Groq and Pexels have generous free-tier rate limits (not hard monthly
-  caps at this volume), and voiceover runs locally via Piper with no
-  metering at all. The only limit that can bite is YouTube's own API
-  quota (see above).
-- **Groq free-tier limits**: rate limits are generous but not unlimited —
-  if you hit a 429 on a run, it's a temporary rate limit, not a billing
-  issue; just re-run later.
-- **Voice quality**: Kokoro is the default English voice; Piper is the
-  fallback for the other listed languages. Switching TTS providers is
-  isolated to `generate_voiceover.py`.
-
----
-
-# Long-Form AI Video Generator
-
-Autonomous GitHub Actions pipeline that takes a text prompt/topic and generates a complete long-form AI video with narration, AI-generated visuals, and animated scenes.
+YouTube upload is **not** automated — the pipeline ends at final video assembly.
+The GitHub Actions workflow packages the MP4, AI-generated metadata (title, description,
+tags, thumbnail), and logs as downloadable run artifacts for manual publishing.
 
 ## How it works
+
+### Long-Form Pipeline (orchestrator.py)
 
 ```
 Stage 1: Script Expansion & Visual Scene Breakdown
   Input: raw topic -> LLM API (Gemini / Claude / Groq) -> structured JSON script
-  Output: voiceover script, image prompts, animation parameters per scene
+  Output: title, hook, description, tags, thumbnail prompt, voiceover text,
+          image prompts, animation parameters per scene
 
 Stage 2: Voiceover Generation
-  Input: script sections -> TTS API (ElevenLabs / Edge-TTS) -> WAV narration
+  Input: script sections -> TTS (Kokoro / Piper / Edge-TTS / ElevenLabs) -> WAV narration
 
 Stage 3: Asset & Image Generation
   Input: structured visual prompts -> Image API (Flux via Replicate / Together AI) -> high-res base frames
+  (Parallel: all scenes generated concurrently)
 
 Stage 4: Image-to-Video Animation & Extension
   Input: base frames + motion params -> Video API -> animated video segments
-  Automatic duration extension loops chain segments for long-form output
+  (Parallel: all scenes animated concurrently)
 
 Stage 5: Video Assembly & Production
   Input: video segments + narration -> MoviePy / FFmpeg -> final compiled MP4
+
+Stage 6: Metadata & Thumbnail Packaging
+  Input: script metadata -> LLM refinement + AI image gen -> metadata.json + thumbnail.png
 ```
 
-## Architecture Files
+### Shorts Pipeline (main.py + src/)
 
-| File | Purpose |
-|------|---------|
-| `config.py` | Loads GitHub Secrets into validated settings |
-| `models.py` | Pydantic data structures for script, scenes, assets |
-| `prompts.py` | System prompts for LLM script expansion |
-| `api_clients.py` | Async wrappers for LLM, TTS, image gen, video gen APIs |
-| `orchestrator.py` | Sequential stage execution with retry logic and error handling |
-| `.github/workflows/generate-video.yml` | GitHub Actions workflow (manual + cron) |
+```
+trend_fetch.py       -> picks a trending topic (Google Trends, with fallback list)
+generate_script.py   -> Groq writes title/description/tags/narration/keywords
+generate_voiceover.py -> Kokoro (local TTS; Piper fallback) turns narration into a WAV
+fetch_visuals.py      -> Pexels / Pixabay / Mixkit downloads matching stock clips
+generate_illustrations.py -> Pollinations.ai generates AI illustration clips
+assemble_video.py     -> ffmpeg stitches clips + voiceover + title card + captions
+generate_thumbnail.py -> Pillow makes a 1280x720 thumbnail from a video frame
+main.py               -> runs all of the above in order, then packages metadata
+```
 
 ## Setup
 
-### 1. Required GitHub Secrets
+### GitHub Actions Secrets
 
 Add these under **Settings → Secrets and variables → Actions → New repository secret**:
 
@@ -161,8 +66,26 @@ Add these under **Settings → Secrets and variables → Actions → New reposit
 | `REPLICATE_API_TOKEN` | Image gen + Video gen | `IMAGE_GEN_PROVIDER=replicate_flux` or `VIDEO_GEN_PROVIDER=replicate` |
 | `TOGETHER_API_KEY` | Image gen + Video gen | `IMAGE_GEN_PROVIDER=together_flux` or `VIDEO_GEN_PROVIDER=together` |
 | `HUGGINGFACE_API_KEY` | Video gen (fallback) | `VIDEO_GEN_PROVIDER=huggingface` |
+| `PEXELS_API_KEY` | Stock footage (Shorts pipeline) | `VISUAL_STYLE=pexels` |
+| `PIXABAY_API_KEY` | Stock footage fallback (Shorts pipeline) | optional |
 
-### 2. Local Run
+### Environment Variables
+
+These can be set in the workflow YAML or as repository-level `Settings → Variables`:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LLM_PROVIDER` | `gemini` | LLM for script generation |
+| `TTS_PROVIDER` | `kokoro` | TTS provider: kokoro \| piper \| elevenlabs \| edge_tts |
+| `KOKORO_VOICE` | `am_adam` | Kokoro voice ID (only for `TTS_PROVIDER=kokoro`) |
+| `PIPER_VOICE` | `en_US-amy-low` | Piper voice model (only for `TTS_PROVIDER=piper`) |
+| `IMAGE_GEN_PROVIDER` | `replicate_flux` | Image generator |
+| `VIDEO_GEN_PROVIDER` | `replicate` | Video/animation provider |
+| `TARGET_DURATION_SECONDS` | `180` | Desired final video length |
+| `RESOLUTION` | `1920x1080` | Output resolution |
+| `LOG_LEVEL` | `INFO` | Logging verbosity |
+
+### Local Run (Long-Form Pipeline)
 
 ```bash
 pip install -r requirements.txt
@@ -171,35 +94,42 @@ export REPLICATE_API_TOKEN=...
 python orchestrator.py
 ```
 
-### 3. GitHub Actions
+Outputs are written to `output/`:
+- `final_video.mp4` — the assembled video
+- `metadata.json` — AI-generated title, description, tags, thumbnail
+- `thumbnail.png` — high-CTR thumbnail image
 
-- **Manual trigger**: Go to **Actions** tab → *Generate Long-Form AI Video* → *Run workflow*.
-- **Scheduled**: Runs daily at 08:00 UTC (adjust cron in the workflow file).
+### Local Run (Shorts Pipeline)
 
-### 4. Environment Variables
+```bash
+pip install -r requirements.txt
+# also install ffmpeg locally (brew install ffmpeg / apt install ffmpeg)
+export GROQ_API_KEY=...
+export PEXELS_API_KEY=...
+python main.py
+```
 
-These can be set in the workflow YAML or as repository-level `Settings → Variables`:
+## GitHub Actions
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LLM_PROVIDER` | `gemini` | LLM for script generation |
-| `TTS_PROVIDER` | `edge_tts` | TTS provider |
-| `IMAGE_GEN_PROVIDER` | `replicate_flux` | Image generator |
-| `VIDEO_GEN_PROVIDER` | `replicate` | Video/animation provider |
-| `TARGET_DURATION_SECONDS` | `180` | Desired final video length |
-| `RESOLUTION` | `1920x1080` | Output resolution |
-| `LOG_LEVEL` | `INFO` | Logging verbosity |
+- **Long-Form**: Go to **Actions** tab → *Generate Long-Form AI Video* → *Run workflow*,
+  set your topic and provider options, then run. The output is a downloadable artifact
+  containing the MP4, metadata JSON, and thumbnail.
+- **Daily Shorts**: The `daily_video.yml` workflow runs on a schedule.
 
 ## Error Handling & Retries
 
 - All external API calls use **exponential backoff** with up to 5 retries on 429 / 5xx / timeout.
-- Pipeline stages are sequential and fail-fast with detailed logs.
+- Pipeline stages use `asyncio.gather` for parallel asset generation where possible.
 - Failed runs produce diagnostic artifacts uploaded to the Actions run.
 - Secrets are never logged; only provider names and error categories appear in logs.
 
 ## Notes
 
-- **Duration extension**: Stage 4 chains video generations to reach `TARGET_DURATION_SECONDS`. Longer videos consume more API quota and time.
-- **Watermarks**: Choose providers/models that permit commercial use and watermark-free output. Replicate Flux and Together Flux generally satisfy this.
+- **FFmpeg Tuning**: All video encoding uses `threads=0` (all cores) and a fast
+  preset (`veryfast` for libx264) to prevent GitHub runner timeouts on long-form content.
+  Hardware acceleration (VideoToolbox on macOS, NVENC on NVIDIA) is auto-detected.
+- **Model Caching**: Kokoro and Piper TTS model weights are cached via GitHub Actions
+  cache, minimizing cold-start latency on every run.
+- **Outputs**: Final video, metadata JSON, and thumbnail are uploaded as Action
+  artifacts — no automated YouTube upload.
 - **Costs**: All providers have free tiers; check rate limits if running on schedule.
-- **Outputs**: Final video is uploaded as an Action artifact. Generated frames and logs are committed back to the repo (controlled by `contents: write` permission).

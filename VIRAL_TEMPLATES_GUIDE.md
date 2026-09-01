@@ -1,9 +1,9 @@
 """
-VIRAL YOUTUBE SHORTS TEMPLATES 2026 - COMPLETE IMPLEMENTATION GUIDE
-====================================================================
+VIRAL VIDEO TEMPLATES 2026 - COMPLETE IMPLEMENTATION GUIDE
+=========================================================
 
-This document explains the complete viral template system integrated into your 
-YouTube Shorts automation pipeline for maximum retention and engagement.
+This document explains the complete viral template system integrated into your
+AI video automation pipeline for maximum retention and engagement.
 """
 
 # ============================================================================

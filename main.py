@@ -1,37 +1,34 @@
 """
 Runs the full daily pipeline end to end:
 trending topic -> script -> voiceover -> stock clips -> assembled video
--> thumbnail -> YouTube upload.
+-> thumbnail -> packaged metadata artifact (manual upload step).
 """
 
+import json
 import os
 import sys
 import traceback
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
-from trend_fetch import resolve_topic
-from seo_research import research_keywords
-from generate_script import generate_script
-from generate_voiceover import generate_voiceover
+from assemble_video import assemble_video
 from fetch_visuals import fetch_clips
 from generate_illustrations import generate_illustrations
-from assemble_video import assemble_video
+from generate_script import generate_script
 from generate_thumbnail import generate_thumbnail
-from upload_youtube import upload_video
-from select_music import pick_track
-from template_integration import apply_template_to_pipeline
+from generate_voiceover import generate_voiceover
 from performance_optimizer import media_duration
+from select_music import pick_track
+from seo_research import research_keywords
+from template_integration import apply_template_to_pipeline
+from trend_fetch import resolve_topic
 
 WORK_DIR = "work"
 OUTPUT_DIR = "output"
 
-# Voiceover uses Piper (local, no API key needed) -- not in this list.
+# Voiceover uses Kokoro/Piper (local, no API key needed) -- not in this list.
 REQUIRED_ENV_VARS = [
     "GROQ_API_KEY",
-    "YT_CLIENT_ID",
-    "YT_CLIENT_SECRET",
-    "YT_REFRESH_TOKEN",
 ]
 
 
@@ -61,7 +58,7 @@ def run():
     topic_mode = os.environ.get("TOPIC_MODE", "trending")
     topic_category = os.environ.get("TOPIC_CATEGORY", "any")
     custom_topic = os.environ.get("CUSTOM_TOPIC", "")
-    print(f"Step 1/7: Finding a topic (mode={topic_mode!r}, category={topic_category!r}, custom_topic={custom_topic!r})...")
+    print(f"Step 1/6: Finding a topic (mode={topic_mode!r}, category={topic_category!r}, custom_topic={custom_topic!r})...")
     if topic_mode == "custom" and not custom_topic.strip():
         print("  WARNING: mode is 'custom' but custom_topic is blank -- falling back to trending.")
     topic = resolve_topic(mode=topic_mode, category=topic_category, custom_topic=custom_topic)
@@ -70,16 +67,16 @@ def run():
     video_mode = os.environ.get("VIDEO_MODE", "video")
     is_shorts = video_mode == "shorts"
 
-    print("Step 2/7: Researching real search keywords (SEO)...")
+    print("Step 2/6: Researching real search keywords (SEO)...")
     seo_keywords = research_keywords(topic)
     print(f"  -> Keywords: {seo_keywords[:5]}{'...' if len(seo_keywords) > 5 else ''}")
 
     language = os.environ.get("LANGUAGE", "english")
-    print(f"Step 3/7: Generating script + SEO metadata (language={language!r})...")
+    print(f"Step 3/6: Generating script + SEO metadata (language={language!r})...")
     package = generate_script(topic, seo_keywords=seo_keywords, language=language)
     print(f"  -> Title: {package['title']}")
 
-    print(f"Step 4/7: Generating voiceover ({language})...")
+    print(f"Step 4/6: Generating voiceover ({language})...")
     voiceover_path = os.path.join(WORK_DIR, "voiceover.wav")
     generate_voiceover(package["narration"], voiceover_path, language=language)
 
@@ -98,10 +95,10 @@ def run():
             # An exact scene/image prompt drives the VISUALS only -- the
             # narration above is unaffected and keeps coming from the topic,
             # never from this prompt.
-            print(f"Step 5/7: Generating AI illustration clips from a custom prompt ({orientation})...")
+            print(f"Step 5/6: Generating AI illustration clips from a custom prompt ({orientation})...")
             illustration_prompts = [custom_visual_prompt] * len(package["visual_keywords"])
         else:
-            print(f"Step 5/7: Generating AI illustration clips ({orientation})...")
+            print(f"Step 5/6: Generating AI illustration clips ({orientation})...")
             illustration_prompts = package["visual_keywords"]
         clip_paths = generate_illustrations(
             illustration_prompts,
@@ -110,7 +107,7 @@ def run():
             vary_seed_per_clip=bool(custom_visual_prompt),
         )
     else:  # "pexels" (default)
-        print(f"Step 5/7: Fetching stock clips ({orientation})...")
+        print(f"Step 5/6: Fetching stock clips ({orientation})...")
         clip_paths = fetch_clips(
             package["visual_keywords"],
             os.path.join(WORK_DIR, "clips"),
@@ -124,7 +121,7 @@ def run():
     )
     print(f"  -> Template: {template_config.name}")
     
-    print(f"Step 6/7: Assembling {'Shorts (1080x1920)' if is_shorts else 'video (1920x1080)'} + thumbnail...")
+    print(f"Step 6/6: Assembling {'Shorts (1080x1920)' if is_shorts else 'video (1920x1080)'} + thumbnail...")
     video_path = os.path.join(OUTPUT_DIR, "video.mp4")
     assemble_video(
         clip_paths, voiceover_path, package["title"], video_path,
@@ -134,28 +131,27 @@ def run():
     thumbnail_path = os.path.join(OUTPUT_DIR, "thumbnail.jpg")
     generate_thumbnail(video_path, package["title"], thumbnail_path, _vertical=is_shorts)
 
-    print("Step 7/7: Uploading to YouTube...")
-    title = package["title"]
-    description = package["description"]
-    if is_shorts:
-        # #Shorts is the reliable signal YouTube uses to route a video into
-        # the Shorts shelf -- vertical + short duration alone isn't enough.
-        # Reserve room in the 100-char title cap so it never gets truncated off.
-        if "#shorts" not in title.lower():
-            title = title[:92].rstrip() + " #Shorts"
-        if "#shorts" not in description.lower():
-            description = description.rstrip() + "\n\n#Shorts"
+    # --- Stage 6: Package final MP4 + AI metadata as a downloadable artifact ---
+    # YouTube upload has been removed from this pipeline. The final MP4,
+    # thumbnail, and a metadata JSON (title/description/tags/hook) are written
+    # to the output/ folder so they can be uploaded as a single GitHub Actions
+    # run artifact for manual publishing.
+    metadata = {
+        "title": package["title"],
+        "description": package["description"],
+        "tags": package["tags"],
+        "hook": package.get("hook", ""),
+        "video_path": video_path,
+        "thumbnail_path": thumbnail_path,
+    }
+    metadata_path = os.path.join(OUTPUT_DIR, "metadata.json")
+    with open(metadata_path, "w", encoding="utf-8") as f:
+        json.dump(metadata, f, indent=2, ensure_ascii=False)
 
-    video_id = upload_video(
-        video_path=video_path,
-        title=title,
-        description=description,
-        tags=package["tags"],
-        thumbnail_path=thumbnail_path,
-        privacy_status=os.environ.get("YT_PRIVACY_STATUS", "public"),
-    )
-
-    print(f"\nDone! https://www.youtube.com/watch?v={video_id}")
+    print(f"\nDone! Video: {video_path}")
+    print(f"  Thumbnail: {thumbnail_path}")
+    print(f"  Metadata:  {metadata_path}")
+    print("Review the artifacts above and upload manually to YouTube.")
 
 
 if __name__ == "__main__":

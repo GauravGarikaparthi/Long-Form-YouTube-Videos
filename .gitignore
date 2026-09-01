@@ -1,16 +1,12 @@
-# secrets — never commit these
-client_secret*.json
-.env
-.env.*
-*.key
-
 # generated at runtime
 work/
 output/
+models/
+voices/
 test_clips/
 test_voice.mp3
 test_voice.wav
-voices/
+test_illustrations/
 
 # python
 __pycache__/

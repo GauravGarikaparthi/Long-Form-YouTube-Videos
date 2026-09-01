@@ -255,7 +255,7 @@ Templates are selected intelligently in this order:
 ## 📋 File Locations Summary
 
 ```
-youtubeshorts/
+Long-Form-YouTube-Videos/
 ├── src/
 │   ├── viral_templates.py         ← 10 template definitions
 │   ├── viral_captions.py          ← 6 caption styles
