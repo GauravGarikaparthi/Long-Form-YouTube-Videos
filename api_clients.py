@@ -97,7 +97,7 @@ class LLMClient(BaseAPIClient):
     async def _call_gemini(self, system_prompt: str, user_prompt: str) -> ScriptPackage:
         import google.generativeai as genai
         genai.configure(api_key=self.settings.gemini_api_key)
-        model = genai.GenerativeModel("gemini-1.5-pro", system_instruction=system_prompt)
+        model = genai.GenerativeModel("gemini-2.5-pro", system_instruction=system_prompt)
         response = await asyncio.to_thread(model.generate_content, user_prompt)
         text = response.text.strip()
         if text.startswith("```"):
@@ -110,7 +110,7 @@ class LLMClient(BaseAPIClient):
     ) -> dict[str, Any]:
         import google.generativeai as genai
         genai.configure(api_key=self.settings.gemini_api_key)
-        model = genai.GenerativeModel("gemini-1.5-pro", system_instruction=system_prompt)
+        model = genai.GenerativeModel("gemini-2.5-pro", system_instruction=system_prompt)
         response = await asyncio.to_thread(model.generate_content, user_prompt)
         text = response.text.strip()
         if text.startswith("```"):
