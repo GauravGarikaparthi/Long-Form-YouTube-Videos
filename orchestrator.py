@@ -24,14 +24,19 @@ from models import AnimationParams, ScriptPackage, VideoMetadata, VideoPipelineR
 from prompts import IMAGE_GEN_PROMPT_TEMPLATE
 
 
-def setup_logging(level: str = "INFO") -> logging.Logger:
+def setup_logging(level: str = "INFO", log_file: str | None = None) -> logging.Logger:
     logging.basicConfig(
         level=getattr(logging, level.upper(), logging.INFO),
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%H:%M:%S",
         stream=sys.stdout,
     )
-    return logging.getLogger("longform_video_pipeline")
+    logger = logging.getLogger("longform_video_pipeline")
+    if log_file:
+        file_handler = logging.FileHandler(log_file, encoding="utf-8")
+        file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"))
+        logger.addHandler(file_handler)
+    return logger
 
 
 def _ffmpeg_video_args() -> list[str]:
@@ -337,7 +342,8 @@ class Pipeline:
 
 def run(topic: str) -> VideoPipelineResult:
     settings = load_settings()
-    logger = setup_logging(settings.log_level)
+    log_path = settings.work_dir / "pipeline.log"
+    logger = setup_logging(settings.log_level, str(log_path))
     pipeline = Pipeline(settings, logger)
     return asyncio.run(pipeline.run(topic))
 

@@ -64,8 +64,6 @@ on:
         required: false
         default: "1920x1080"
         type: string
-    schedule:
-      - cron: "0 8 * * *"
 
 permissions:
   contents: read
