@@ -96,9 +96,18 @@ class LLMClient(BaseAPIClient):
 
     async def _call_gemini(self, system_prompt: str, user_prompt: str) -> ScriptPackage:
         import google.generativeai as genai
+        try:
+            from google.api_core.exceptions import ResourceExhausted
+        except ImportError:
+            ResourceExhausted = None
         genai.configure(api_key=self.settings.gemini_api_key)
         model = genai.GenerativeModel("gemini-3.1-pro-preview", system_instruction=system_prompt)
-        response = await asyncio.to_thread(model.generate_content, user_prompt)
+        try:
+            response = await asyncio.to_thread(model.generate_content, user_prompt)
+        except Exception as exc:
+            if ResourceExhausted and isinstance(exc, ResourceExhausted):
+                raise RateLimitError(f"Gemini quota/rate limit exceeded: {exc}", provider="gemini") from exc
+            raise
         text = response.text.strip()
         if text.startswith("```"):
             text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
@@ -109,9 +118,18 @@ class LLMClient(BaseAPIClient):
         self, system_prompt: str, user_prompt: str, schema_keys: list[str]
     ) -> dict[str, Any]:
         import google.generativeai as genai
+        try:
+            from google.api_core.exceptions import ResourceExhausted
+        except ImportError:
+            ResourceExhausted = None
         genai.configure(api_key=self.settings.gemini_api_key)
         model = genai.GenerativeModel("gemini-3.1-pro-preview", system_instruction=system_prompt)
-        response = await asyncio.to_thread(model.generate_content, user_prompt)
+        try:
+            response = await asyncio.to_thread(model.generate_content, user_prompt)
+        except Exception as exc:
+            if ResourceExhausted and isinstance(exc, ResourceExhausted):
+                raise RateLimitError(f"Gemini quota/rate limit exceeded: {exc}", provider="gemini") from exc
+            raise
         text = response.text.strip()
         if text.startswith("```"):
             text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
